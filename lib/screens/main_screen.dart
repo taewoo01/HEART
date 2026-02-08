@@ -8,6 +8,7 @@ import '../services/ai_service.dart';
 import '../services/storage_service.dart';
 import 'mission_page.dart';
 import 'history_page.dart';
+import 'natural_chat_screen.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -21,6 +22,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   bool _isLoading = true;
   late AnimationController _breathingController;
   final AIService _aiService = AIService();
+  String _aiWeatherString = "Sunny";
+  bool _autoChatPending = true;
+  bool _isRestDay = false;
+  String _todayMode = "NORMAL";
+  String _todayPreference = "";
 
   // 👤 유저 정보
   String _nickname = "여행자";
@@ -41,13 +47,14 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       duration: const Duration(milliseconds: 2000),
     )..repeat(reverse: true);
 
-    _loadAllData(); 
+    _todaysMission = _getBackupMission();
+    _loadAllData(generateMission: false); 
   }
 
   // =========================================================
   // 🚀 데이터 로딩 (위치 -> 날씨 -> AI 미션 순차 실행)
   // =========================================================
-  Future<void> _loadAllData() async {
+  Future<void> _loadAllData({bool allowAutoChat = true, bool generateMission = true}) async {
     if (!mounted) return;
     setState(() => _isLoading = true);
 
@@ -84,26 +91,39 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         
         // Enum -> String 변환 (AI 전달용)
         aiWeatherString = _getWeatherString(realWeather);
+        _aiWeatherString = aiWeatherString;
       }
 
-      // 3. 🤖 AI에게 맞춤 미션 요청 (수정된 부분!)
-      // 이제 위치와 날씨 정보를 함께 전달합니다.
-      final aiMission = await _aiService.generateDailyMission(
-        _location,      // 예: "서울"
-        aiWeatherString // 예: "Rainy"
-      );
-      final String aiMissionText = (aiMission['mission_guide'] ?? "").toString();
-      final String aiMissionTitle = (aiMission['mission_title'] ?? "").toString();
-      final int aiMissionXp = aiMission['xp_reward'] is int ? aiMission['xp_reward'] : 100;
-      final String aiStrategy = (aiMission['strategy_name'] ?? "").toString();
-      final String aiReasoning = (aiMission['reasoning'] ?? "").toString();
-      final String aiVision = (aiMission['vision_object'] ?? "").toString();
-      final String aiMissionTypeStr = (aiMission['mission_type'] ?? "").toString();
-      final MissionType aiMissionType = _resolveMissionType(
-        aiMissionTypeStr,
-        visionObject: aiVision,
-        fallbackGrade: _grade,
-      );
+      // 3. 🤖 AI에게 맞춤 미션 요청
+      Map<String, dynamic>? aiMission;
+      String aiMissionText = "";
+      String aiMissionTitle = "";
+      int aiMissionXp = 100;
+      String aiStrategy = "";
+      String aiReasoning = "";
+      String aiVision = "";
+      MissionType aiMissionType = _getMissionTypeByGrade(_grade);
+
+      if (generateMission) {
+        aiMission = await _aiService.generateDailyMission(
+          _location,
+          aiWeatherString,
+          userPreference: _todayPreference,
+          mode: _todayMode.toLowerCase(),
+        );
+        aiMissionText = (aiMission['mission_guide'] ?? "").toString();
+        aiMissionTitle = (aiMission['mission_title'] ?? "").toString();
+        aiMissionXp = aiMission['xp_reward'] is int ? aiMission['xp_reward'] : 100;
+        aiStrategy = (aiMission['strategy_name'] ?? "").toString();
+        aiReasoning = (aiMission['reasoning'] ?? "").toString();
+        aiVision = (aiMission['vision_object'] ?? "").toString();
+        final String aiMissionTypeStr = (aiMission['mission_type'] ?? "").toString();
+        aiMissionType = _resolveMissionType(
+          aiMissionTypeStr,
+          visionObject: aiVision,
+          fallbackGrade: _grade,
+        );
+      }
 
       if (mounted) {
         setState(() {
@@ -120,14 +140,23 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
             reasoning: aiReasoning.isNotEmpty ? aiReasoning : null,
             visionObject: aiVision.isNotEmpty ? aiVision : null,
           );
-          StorageService.addRecentMission(
-            aiMissionTitle.isNotEmpty ? aiMissionTitle : _getMissionTitleByGrade(_grade),
-            aiMissionText.isNotEmpty ? aiMissionText : _getBackupMission().content,
-          );
+          if (generateMission) {
+            StorageService.addRecentMission(
+              aiMissionTitle.isNotEmpty ? aiMissionTitle : _getMissionTitleByGrade(_grade),
+              aiMissionText.isNotEmpty ? aiMissionText : _getBackupMission().content,
+            );
+          }
           
           _isMissionCompleted = false;
           _isBonusActive = false;
+          _isRestDay = _todayMode == "REST";
           _isLoading = false;
+        });
+      }
+      if (allowAutoChat && _autoChatPending) {
+        _autoChatPending = false;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _openIntakeChat();
         });
       }
     } catch (e) {
@@ -138,6 +167,75 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           _isLoading = false;
         });
       }
+    }
+  }
+
+  Future<void> _openIntakeChat() async {
+    final result = await Navigator.push(
+      context,
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) {
+          return NaturalChatScreen.intake(
+            location: _location,
+            weather: _aiWeatherString,
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 250),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          final curved = CurvedAnimation(parent: animation, curve: Curves.easeOut);
+          return FadeTransition(opacity: curved, child: child);
+        },
+      ),
+    );
+
+    if (!mounted) return;
+    if (result is Map<String, dynamic>) {
+      final condition = (result['condition'] ?? '').toString();
+      final place = (result['place'] ?? '').toString();
+      final activity = (result['activity'] ?? '').toString();
+      final userChoice = (result['user_choice'] ?? 'NORMAL').toString().toUpperCase();
+
+      final intake = await _aiService.assessTodayModeFromIntake(
+        condition: condition,
+        place: place,
+        activity: activity,
+        location: _location,
+        weather: _aiWeatherString,
+      );
+
+      if (intake != null) {
+        _todayMode = (intake['mode'] ?? 'NORMAL').toString().toUpperCase();
+        _todayPreference = (intake['preference'] ?? '').toString();
+      }
+      // 사용자가 선택한 모드가 최우선
+      _todayMode = userChoice;
+
+      // ✅ 하루 기록 저장 (AI 한 줄 요약 + 3문항 원문)
+      final hasInput = (condition + place + activity).trim().isNotEmpty;
+      if (hasInput) {
+        final summary = await _aiService.summarizeIntake(
+          condition: condition,
+          place: place,
+          activity: activity,
+          location: _location,
+          weather: _aiWeatherString,
+          userChoice: userChoice,
+        );
+        final choiceLabel = _choiceLabel(userChoice);
+        final noteLines = <String>[
+          if (summary.isNotEmpty) "AI 요약: $summary",
+          "컨디션: ${condition.isEmpty ? "미응답" : condition}",
+          "현재 위치: ${place.isEmpty ? "미응답" : place}",
+          "하고 있던 일: ${activity.isEmpty ? "미응답" : activity}",
+          "선택: $choiceLabel",
+        ];
+        await StorageService.addMemoryEntry(
+          note: noteLines.join("\n"),
+          iconName: "edit",
+        );
+      }
+
+      await _loadAllData(allowAutoChat: false, generateMission: true);
     }
   }
 
@@ -226,6 +324,17 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     if (xp >= 65) return 'B';
     if (xp >= 45) return 'C';
     return fallbackGrade.isNotEmpty ? fallbackGrade : 'D';
+  }
+
+  String _choiceLabel(String choice) {
+    switch (choice.toUpperCase()) {
+      case 'REST':
+        return '휴식';
+      case 'LIGHT':
+        return '가볍게';
+      default:
+        return '일반';
+    }
   }
 
   MissionModel _getBackupMission() {
@@ -398,19 +507,21 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                           children: [
                             _buildAIOrb(),
                             const SizedBox(height: 15),
-                            AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 500),
-                              child: _isMissionCompleted
-                                  ? _buildCompletedCard()
-                                  : QuestCard(key: ValueKey(_todaysMission.content), mission: _todaysMission),
-                            ),
-                          ],
-                        ),
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 500),
+                      child: _isRestDay
+                          ? _buildRestCard()
+                          : _isMissionCompleted
+                              ? _buildCompletedCard()
+                              : QuestCard(key: ValueKey(_todaysMission.content), mission: _todaysMission),
+                    ),
+                  ],
+                ),
 
                         const SizedBox(height: 30),
 
                         // 하단 버튼 (완료 시 휴식 메시지)
-                        _isMissionCompleted ? _buildRestMessage() : _buildActionButtons(context),
+                _isRestDay ? _buildRestMessage() : (_isMissionCompleted ? _buildRestMessage() : _buildActionButtons(context)),
 
                         // 버튼에 가려지지 않게 여백
                         const SizedBox(height: 80),
@@ -543,6 +654,34 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           const Text("오늘의 발견 완료", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
           const SizedBox(height: 10),
           const Text("당신의 세상이 한 뼘 더 넓어졌습니다.", textAlign: TextAlign.center, style: TextStyle(fontSize: 16, color: Colors.white)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRestCard() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(horizontal: 25),
+      padding: const EdgeInsets.all(25),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.9),
+        borderRadius: BorderRadius.circular(25),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 16, offset: const Offset(0, 8))
+        ],
+      ),
+      child: Column(
+        children: const [
+          Icon(Icons.self_improvement, color: Color(0xFF6BB8B0), size: 50),
+          SizedBox(height: 12),
+          Text("오늘은 휴식 모드", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          SizedBox(height: 8),
+          Text(
+            "무리하지 않고 쉬어가는 날이에요.\n몸과 마음을 편하게 해주세요.",
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.black54),
+          ),
         ],
       ),
     );

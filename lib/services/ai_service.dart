@@ -141,7 +141,12 @@ Emotion Keywords: ${chatKeywords.isEmpty ? "없음" : chatKeywords}
   // =========================================================
   // 🎯 데일리 미션 생성 (HQ-25 기반)
   // =========================================================
-  Future<Map<String, dynamic>> generateDailyMission(String locationName, String weatherCondition) async {
+  Future<Map<String, dynamic>> generateDailyMission(
+    String locationName,
+    String weatherCondition, {
+    String? userPreference,
+    String? mode,
+  }) async {
     final userContext = await _loadUserContext();
     final String nickname = userContext['nickname'];
     final String grade = userContext['grade'];
@@ -166,6 +171,8 @@ Emotion Keywords: ${chatKeywords.isEmpty ? "없음" : chatKeywords}
     final recentText = recentMissions.isEmpty
         ? "없음"
         : recentMissions.map((e) => "- $e").join("\n");
+    final preferenceText = (userPreference ?? "").trim();
+    final modeText = (mode ?? "normal").trim();
 
     final prompt = '''
 ### 1. System Persona
@@ -184,7 +191,13 @@ Emotion Keywords: ${chatKeywords.isEmpty ? "없음" : chatKeywords}
 - "편의점에 가서", "재료를 사서", "요리하기" 같은 지시를 금지한다.
 - 집 안에서 5~10분 내에 수행 가능한 행동만 제안한다.
 
-### 2-2. Recent Missions (avoid repetition)
+### 2-2. User Preference
+- 사용자가 말한 현재 상태/원하는 방향: ${preferenceText.isEmpty ? "없음" : preferenceText}
+- mode가 "light"면 1~3분 내의 매우 쉬운 미션.
+- mode가 "normal"이면 기본 난이도.
+- mode: $modeText
+
+### 2-3. Recent Missions (avoid repetition)
 $recentText
 같은 미션은 반복하지 말고, 의미만 비슷해도 표현을 바꿔 다른 미션처럼 보이게 하라.
 
@@ -391,6 +404,135 @@ $messagesText
       return jsonMap;
     } catch (e) {
       print("❌ 대화 요약 에러: $e");
+      return null;
+    }
+  }
+
+  // =========================================================
+  // 🧭 오늘 상태 판단 (휴식/가벼움/보통)
+  // =========================================================
+  Future<Map<String, dynamic>?> assessTodayMode({
+    required List<Map<String, String>> chatHistory,
+    required String location,
+    required String weather,
+  }) async {
+    final userContext = await _loadUserContext();
+    final String grade = userContext['grade'];
+    final int perSoc = userContext['per_soc'] ?? 50;
+    final int perIso = userContext['per_iso'] ?? 50;
+    final int perEmo = userContext['per_emo'] ?? 50;
+
+    final messagesText = chatHistory
+        .where((m) => (m['text'] ?? '').isNotEmpty)
+        .map((m) => "${m['role']}: ${m['text']}")
+        .join("\n");
+
+    if (messagesText.trim().isEmpty) return null;
+
+    final now = DateTime.now();
+    final timeNow = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}";
+
+    final prompt = '''
+아래 정보를 바탕으로 오늘의 상태를 판단하고, 추천 모드(REST/LIGHT/NORMAL) 중 하나를 고르세요.
+출력은 JSON만.
+
+User Grade: $grade
+HQ-25: Soc ${perSoc}%, Iso ${perIso}%, Emo ${perEmo}%
+Location: $location
+Weather: $weather
+Time: $timeNow
+
+대화:
+$messagesText
+
+출력 형식:
+{
+  "mode": "REST/LIGHT/NORMAL",
+  "message": "사용자에게 전할 짧은 안내(2문장)",
+  "preference": "오늘 원하는 방향/상태 한줄 요약"
+}
+''';
+
+    try {
+      final response = await _chatCompletion(
+        model: _chatModel,
+        messages: [
+          {"role": "system", "content": "Return only valid JSON. All strings must be in Korean."},
+          {"role": "user", "content": prompt},
+        ],
+        temperature: 0.2,
+        responseFormat: {"type": "json_object"},
+      );
+      final jsonMap = _extractJson(response);
+      if (jsonMap != null) {
+        print("🧠 [AIService] TodayMode JSON: $jsonMap");
+      }
+      return jsonMap;
+    } catch (e) {
+      print("❌ 오늘 상태 판단 에러: $e");
+      return null;
+    }
+  }
+
+  // =========================================================
+  // 🧭 상태 질문 기반 모드 판단
+  // =========================================================
+  Future<Map<String, dynamic>?> assessTodayModeFromIntake({
+    required String condition,
+    required String place,
+    required String activity,
+    required String location,
+    required String weather,
+  }) async {
+    final userContext = await _loadUserContext();
+    final String grade = userContext['grade'];
+    final int perSoc = userContext['per_soc'] ?? 50;
+    final int perIso = userContext['per_iso'] ?? 50;
+    final int perEmo = userContext['per_emo'] ?? 50;
+
+    final now = DateTime.now();
+    final timeNow = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}";
+
+    final prompt = '''
+아래 정보를 바탕으로 오늘의 상태를 판단하고, 추천 모드(REST/LIGHT/NORMAL) 중 하나를 고르세요.
+출력은 JSON만.
+
+User Grade: $grade
+HQ-25: Soc ${perSoc}%, Iso ${perIso}%, Emo ${perEmo}%
+Location: $location
+Weather: $weather
+Time: $timeNow
+
+사용자 응답:
+- 컨디션: $condition
+- 현재 위치: $place
+- 현재 행동: $activity
+
+출력 형식:
+{
+  "mode": "REST/LIGHT/NORMAL",
+  "message": "사용자에게 전할 짧은 안내(2문장)",
+  "preference": "오늘 원하는 방향/상태 한줄 요약"
+}
+''';
+
+    try {
+      final response = await _chatCompletion(
+        model: _chatModel,
+        messages: [
+          {"role": "system", "content": "Return only valid JSON. All strings must be in Korean."},
+          {"role": "user", "content": prompt},
+        ],
+        temperature: 0.2,
+        responseFormat: {"type": "json_object"},
+      );
+      final jsonMap = _extractJson(response);
+      if (jsonMap != null) {
+        print("🧠 [AIService] IntakeMode JSON: $jsonMap");
+      }
+      return jsonMap;
+    } catch (e) {
+      print("❌ 상태 질문 분석 에러: $e");
       return null;
     }
   }
@@ -631,6 +773,53 @@ $messagesText
 
   bool _hasHangul(String text) {
     return RegExp(r'[가-힣]').hasMatch(text);
+  }
+
+  // =========================================================
+  // 📝 상태 질문 요약 (한 줄)
+  // =========================================================
+  Future<String> summarizeIntake({
+    required String condition,
+    required String place,
+    required String activity,
+    required String location,
+    required String weather,
+    String? userChoice,
+  }) async {
+    final prompt = '''
+아래 응답을 한 줄로 부드럽게 요약해 주세요.
+출력은 JSON만.
+
+환경: $location / $weather
+사용자 선택: ${userChoice ?? "없음"}
+응답:
+- 컨디션: $condition
+- 현재 위치: $place
+- 하고 있던 일: $activity
+
+출력 형식:
+{"summary": "한 줄 요약 (한국어)"}
+''';
+
+    try {
+      final response = await _chatCompletion(
+        model: _chatModel,
+        messages: [
+          {"role": "system", "content": "Return only valid JSON. All strings must be in Korean."},
+          {"role": "user", "content": prompt},
+        ],
+        temperature: 0.2,
+        responseFormat: {"type": "json_object"},
+      );
+      final jsonMap = _extractJson(response);
+      if (jsonMap != null) {
+        final summary = (jsonMap['summary'] ?? '').toString().trim();
+        if (summary.isNotEmpty) return summary;
+      }
+    } catch (e) {
+      print("❌ 상태 요약 에러: $e");
+    }
+    return "";
   }
 
   // 외부에서 전사만 필요할 때 사용

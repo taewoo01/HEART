@@ -11,7 +11,20 @@ import 'local_data_screen.dart';
 import '../services/storage_service.dart';
 
 class NaturalChatScreen extends StatefulWidget {
-  const NaturalChatScreen({super.key});
+  final bool intakeMode;
+  final String? location;
+  final String? weather;
+
+  const NaturalChatScreen({super.key})
+      : intakeMode = false,
+        location = null,
+        weather = null;
+
+  const NaturalChatScreen.intake({
+    super.key,
+    required this.location,
+    required this.weather,
+  }) : intakeMode = true;
 
   @override
   State<NaturalChatScreen> createState() => _NaturalChatScreenState();
@@ -32,6 +45,18 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
   String? _recordedFilePath;
   bool _isRecording = false;
   DateTime? _recordingStartedAt;
+  int _intakeStep = 0;
+  final Map<String, String> _intakeAnswers = {};
+  static const List<String> _intakeQuestions = [
+    "오늘 컨디션은 어떤가요? 예) 좀 지쳤어 / 괜찮은 편이야",
+    "지금 어디에 있나요? 예) 방 / 거실 / 침대 위",
+    "지금 무엇을 하고 있나요? 예) 누워있어 / 앉아서 쉬는 중",
+  ];
+  static const List<String> _intakeEmpathy = [
+    "말해줘서 고마워요. 지금 느낌을 소중하게 들었어요.",
+    "괜찮아요, 편하게 말해줘서 좋아요.",
+    "지금 상태를 알려줘서 정말 도움이 됐어요.",
+  ];
 
   // ✨ 애니메이션 관련
   double _buttonSize = 90.0;
@@ -76,8 +101,14 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
 
     // 5. 첫 인사
     if (_chatHistory.isEmpty) {
+      if (widget.intakeMode) {
+        _aiText = "지금 상태를 천천히 같이 살펴볼게요. 편하게 말해줘요.";
+      }
       _addChatMessage("ai", _aiText);
       _flutterTts.speak(_aiText);
+      if (widget.intakeMode) {
+        _askNextIntakeQuestion();
+      }
     }
   }
 
@@ -238,6 +269,11 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
         }
       }
       
+      if (widget.intakeMode) {
+        await _handleIntakeFlow(finalText);
+        return;
+      }
+
       final aiResponseText = await _aiService.processVoiceChat(
         userText: finalText,
         audioFile: audioFile,
@@ -326,6 +362,70 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
           : <String>[];
       StorageService.saveChatSummary(text, keywords);
     });
+  }
+
+  Future<void> _handleIntakeFlow(String userText) async {
+    if (userText.trim().isEmpty) {
+      setState(() => _isThinking = false);
+      return;
+    }
+
+    // 공감 한마디
+    final empathy = _intakeEmpathy[_intakeStep.clamp(0, _intakeEmpathy.length - 1)];
+    _addChatMessage("ai", empathy);
+    _flutterTts.speak(empathy);
+
+    if (_intakeStep == 0) {
+      _intakeAnswers['condition'] = userText.trim();
+    } else if (_intakeStep == 1) {
+      _intakeAnswers['place'] = userText.trim();
+    } else if (_intakeStep == 2) {
+      _intakeAnswers['activity'] = userText.trim();
+    }
+
+    _intakeStep++;
+
+    if (_intakeStep < _intakeQuestions.length) {
+      _askNextIntakeQuestion();
+      setState(() => _isThinking = false);
+      return;
+    }
+
+    if (!mounted) return;
+    final selected = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text("오늘은 어떤 방향으로 할까요?"),
+        content: const Text("쉬어가기 / 가볍게 / 보통 중에서 골라주세요."),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, "REST"),
+            child: const Text("쉬어갈게요"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, "LIGHT"),
+            child: const Text("가볍게 할래요"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, "NORMAL"),
+            child: const Text("보통으로 해줘"),
+          ),
+        ],
+      ),
+    );
+
+    Navigator.pop(context, {
+      ..._intakeAnswers,
+      "user_choice": selected ?? "NORMAL",
+    });
+  }
+
+  void _askNextIntakeQuestion() {
+    if (_intakeStep >= _intakeQuestions.length) return;
+    final q = _intakeQuestions[_intakeStep];
+    _addChatMessage("ai", q);
+    _flutterTts.speak(q);
   }
 
   @override
