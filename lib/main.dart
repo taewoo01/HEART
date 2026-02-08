@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart'; // 📦 1. 필수 패키지 임포트
 import 'services/storage_service.dart'; 
 import 'screens/user_info_screen.dart';
 import 'screens/onboarding_screen.dart';
@@ -9,6 +10,9 @@ import 'screens/natural_chat_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
+  // 🔑 2. .env 파일 로드 (이게 없으면 앱이 멈춥니다!)
+  await dotenv.load(fileName: ".env");
+
   // 세로 모드 고정
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
@@ -59,7 +63,7 @@ class _HeartAppState extends State<HeartApp> {
     }
   }
 
-  // 2️⃣ [Step 0 -> 1] 닉네임 입력 완료 (수정됨!)
+  // 2️⃣ [Step 0 -> 1] 닉네임 입력 완료
   // 🚨 지역(loc) 파라미터를 삭제하고 닉네임만 받습니다.
   void _completeUserInfo(String name) {
     setState(() {

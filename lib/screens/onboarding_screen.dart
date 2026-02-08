@@ -1,5 +1,6 @@
-import 'dart:convert'; // 📌 JSON 파싱을 위해 필수
+import 'dart:convert'; 
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart'; // 👈 1. 패키지 임포트
 import 'package:google_generative_ai/google_generative_ai.dart';
 import '../utils/theme_utils.dart';
 import '../services/storage_service.dart';
@@ -21,8 +22,8 @@ class OnboardingScreen extends StatefulWidget {
 }
 
 class _OnboardingScreenState extends State<OnboardingScreen> {
-  // ⚠️ 중요: 아까 새로 발급받은 '새 프로젝트의 API 키'를 아래 따옴표 안에 넣으세요.
-  final String _apiKey = 'AIzaSyB3w8463q2SnEnb2S5bgNRl8FA5s-2nfao'; 
+  // 🔐 2. .env에서 API 키 가져오기
+  final String _apiKey = dotenv.env['GEMINI_API_KEY'] ?? ""; 
 
   final int _questionsPerPage = 5; 
   int _currentPageIndex = 0;
@@ -59,11 +60,18 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   void _setAnswer(int globalIndex, int selectedOptionIndex) {
     bool isReverse = _allQuestions[globalIndex]['isReverse'];
-    // 0~4점 부여 (높을수록 고립 성향)
     int score = isReverse ? (4 - selectedOptionIndex) : selectedOptionIndex;
+    
     setState(() {
-      _userAnswers[globalIndex] = score;
+      _userAnswers[globalIndex] = score; 
     });
+  }
+  
+  int? _getUiIndex(int globalIndex) {
+    if (!_userAnswers.containsKey(globalIndex)) return null;
+    int score = _userAnswers[globalIndex]!;
+    bool isReverse = _allQuestions[globalIndex]['isReverse'];
+    return isReverse ? (4 - score) : score;
   }
 
   void _goNextPage() {
@@ -87,32 +95,27 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     return true;
   }
 
-  // =========================================================
-  // 🧠 1. AI 분석용 데이터 변환 (점수 -> 문맥)
-  // =========================================================
+  // AI 데이터 생성
   String _buildSurveyDataForAI() {
     StringBuffer buffer = StringBuffer();
     _userAnswers.forEach((index, score) {
       String question = _allQuestions[index]['q'];
-      String answerMeaning = "";
-      
-      // score (0~4)를 AI가 이해하기 쉬운 텍스트로 변환
-      if (score == 4) answerMeaning = "매우 그렇다 (강한 고립 징후)";
-      else if (score == 3) answerMeaning = "그렇다";
-      else if (score == 2) answerMeaning = "보통이다";
-      else if (score == 1) answerMeaning = "그렇지 않다";
-      else answerMeaning = "전혀 그렇지 않다 (활동적)";
+      String meaning = "";
+      if (score >= 3) meaning = "고립 성향 높음";
+      else if (score <= 1) meaning = "사회성 높음";
+      else meaning = "보통";
 
-      buffer.writeln("- 질문: $question / 답변: $answerMeaning");
+      buffer.writeln("- $question (점수: $score/4, 의미: $meaning)");
     });
     return buffer.toString();
   }
 
-  // =========================================================
-  // 🚀 2. 설문 완료 및 AI 분석 실행 (수정된 핵심 부분)
-  // =========================================================
   Future<void> _finishSurvey() async {
-    // 로딩 다이얼로그
+    // 키 체크 (개발자 디버깅용)
+    if (_apiKey.isEmpty) {
+      print("⚠️ API Key가 없습니다. .env 파일을 확인해주세요.");
+    }
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -131,96 +134,70 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       ),
     );
 
-    String userGrade = 'C'; // 기본값
-    int calculatedScore = 50; // 기본값
+    String userGrade = 'C'; 
+    int calculatedScore = 50; 
     String aiMessage = "분석을 완료했습니다.";
 
     try {
-      // ✅ 1. AI 모델 준비 (설정 주석 해제 및 모델명 확정)
       final model = GenerativeModel(
-        model: 'gemini-flash-latest', // 2026년 기준 안정적인 모델
+        // ⚠️ 3. 모델 이름 안정적인 버전으로 통일
+        model: 'gemini-flash-latest', 
         apiKey: _apiKey,
         generationConfig: GenerationConfig(
-          responseMimeType: 'application/json', // 📌 중요: JSON 형식 강제
+          responseMimeType: 'application/json', 
           temperature: 0.7,
         ),
       );
 
-      // 2. 프롬프트 생성
       final surveyData = _buildSurveyDataForAI();
       final prompt = '''
-        당신은 전문 심리 상담가입니다. 아래 사용자의 설문 답변을 분석하세요.
-        
-        [사용자 정보]
-        닉네임: ${widget.nickname} / 지역: ${widget.location}
-
-        [설문 답변 내역]
+        당신은 전문 심리 상담가입니다. 
+        [사용자 정보] 닉네임: ${widget.nickname}, 지역: ${widget.location}
+        [설문 데이터]
         $surveyData
-
+        
         [임무]
-        답변의 맥락을 파악하여 '사회적 고립 등급(Grade)'을 판단하고 JSON으로 출력하세요.
-        단순 점수 합산이 아니라, 자발적 고립인지 비자발적 고립인지 뉘앙스를 파악하세요.
+        위 데이터를 바탕으로 사회적 고립 등급(Grade)을 판단하고 JSON으로 출력하세요.
+        - A: 매우 건강하고 활발함
+        - B: 양호함, 일상생활 원만
+        - C: 다소 위축됨, 관심 필요
+        - D: 고립 위험, 적극적 케어 필요
 
-        [Grade 기준]
-        - A: 활동적, 긍정적, 사회적 교류 활발.
-        - B: 일상 생활 가능, 가벼운 외출 가능.
-        - C: 사회적 위축, 집안 활동 권장.
-        - D: 심각한 고립 또는 대인기피, 절대적 휴식 필요.
-
-        [출력 JSON 형식]
-        {
-          "grade": "C", 
-          "score": 65,  
-          "message": "사용자에게 건넬 따뜻한 첫 인사 (한국어, 해요체, 2문장)"
-        }
+        형식: {"grade": "C", "score": 65, "message": "따뜻한 한마디(2문장)"}
       ''';
 
-      // 3. AI 요청
       final response = await model.generateContent([Content.text(prompt)]);
-      print("🤖 AI 응답 원본: ${response.text}"); // 디버깅용 로그
-
-      // ✅ 4. 응답 파싱 (강력해진 파싱 로직)
-      String rawText = response.text ?? "{}";
       
-      // JSON 부분만 쏙 뽑아내기 ('{' 부터 '}' 까지)
+      String rawText = response.text ?? "{}";
       int startIndex = rawText.indexOf('{');
       int endIndex = rawText.lastIndexOf('}');
-      
       if (startIndex != -1 && endIndex != -1) {
         rawText = rawText.substring(startIndex, endIndex + 1);
       }
 
       final parsedData = jsonDecode(rawText);
-
       userGrade = parsedData['grade'] ?? 'C';
       calculatedScore = parsedData['score'] is int ? parsedData['score'] : 50;
       aiMessage = parsedData['message'] ?? "만나서 반가워요.";
 
     } catch (e) {
-      // 🚨 AI 오류 시: 기존 단순 합산 로직으로 대체 (Fallback)
-      print("AI 분석 실패 (Fallback 실행): $e");
+      print("AI 분석 실패 (Fallback): $e");
       int totalScore = _userAnswers.values.fold(0, (sum, score) => sum + score);
-      
-      // 100점 만점으로 환산 (문항수 25 * 4점 = 100)
       calculatedScore = totalScore; 
-
       if (totalScore >= 70) userGrade = 'D';
       else if (totalScore >= 50) userGrade = 'C';
       else if (totalScore >= 30) userGrade = 'B';
       else userGrade = 'A';
-      
-      aiMessage = "${widget.nickname}님, 반가워요. 당신의 속도에 맞춰 함께 나아가요.";
+      aiMessage = "당신의 마음에 귀 기울일게요.";
     }
 
-    // UI 색상 설정
     Color stateColor = (userGrade == 'D' || userGrade == 'C') 
-        ? const Color(0xFF6BB8B0) // 휴식/안정
-        : const Color(0xFFE57373); // 활동/에너지
+        ? const Color(0xFF6BB8B0) 
+        : const Color(0xFFE57373); 
 
     if (!mounted) return;
-    Navigator.pop(context); // 로딩 닫기
+    Navigator.pop(context);
 
-    // 5. 저장
     await StorageService.saveUserProfile(
       nickname: widget.nickname,
       location: widget.location,
@@ -228,7 +205,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       grade: userGrade,
     );
 
-    // 6. 결과 팝업
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -241,27 +217,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             const SizedBox(height: 10),
             Icon(Icons.psychology, size: 50, color: stateColor),
             const SizedBox(height: 15),
-            Text(
-              "Grade $userGrade", 
-              style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: stateColor),
-            ),
-            const SizedBox(height: 5),
-            Text(
-              "마음 고립도: $calculatedScore",
-              style: const TextStyle(fontSize: 14, color: Colors.grey),
-            ),
+            Text("Grade $userGrade", style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: stateColor)),
+            Text("마음 온도: $calculatedScore°C", style: const TextStyle(fontSize: 14, color: Colors.grey)), 
             const SizedBox(height: 20),
             Container(
               padding: const EdgeInsets.all(15),
-              decoration: BoxDecoration(
-                color: Colors.grey[100],
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Text(
-                aiMessage, 
-                textAlign: TextAlign.center, 
-                style: const TextStyle(fontSize: 15, height: 1.5, color: Colors.black87)
-              ),
+              decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(10)),
+              child: Text(aiMessage, textAlign: TextAlign.center, style: const TextStyle(fontSize: 15, height: 1.5)),
             ),
           ],
         ),
@@ -271,7 +233,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               Navigator.pop(context);
               widget.onComplete(); 
             },
-            child: Text("여행 시작하기", style: TextStyle(color: stateColor, fontWeight: FontWeight.bold, fontSize: 16)),
+            child: Text("시작하기", style: TextStyle(color: stateColor, fontWeight: FontWeight.bold, fontSize: 16)),
           )
         ],
       ),
@@ -296,7 +258,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
             child: Column(
               children: [
-                // 상단 진행바
+                // 1. 상단 진행바
                 Row(
                   children: [
                     Expanded(
@@ -317,22 +279,39 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     )
                   ],
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 15),
 
-                // 질문 카드 리스트
-                Expanded(
-                  child: Column(
-                    children: List.generate(currentQuestions.length, (index) {
-                      int globalIndex = startIndex + index;
-                      return Expanded(
-                        child: _buildCompactQuestionCard(globalIndex, currentQuestions[index]['q']),
-                      );
-                    }),
+                // 2. 응답 가이드 (범례)
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text("🙅‍♂️ 1 (전혀 아님)", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 13)),
+                      Icon(Icons.arrow_right_alt, color: Colors.black),
+                      Text("5 (매우 그렇다) 🙌", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 13)),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 10),
 
-                // 하단 버튼
+                // 3. 질문 리스트
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: currentQuestions.length,
+                    itemBuilder: (context, index) {
+                      int globalIndex = startIndex + index;
+                      return _buildCompactQuestionCard(globalIndex, currentQuestions[index]['q']);
+                    },
+                  ),
+                ),
+                
+                // 4. 다음 버튼
+                const SizedBox(height: 10),
                 SizedBox(
                   width: double.infinity,
                   height: 50,
@@ -364,51 +343,57 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Widget _buildCompactQuestionCard(int globalIndex, String questionText) {
-    int? score = _userAnswers[globalIndex];
-    int? selectedBtnIndex;
-    if (score != null) {
-      bool isReverse = _allQuestions[globalIndex]['isReverse'];
-      selectedBtnIndex = isReverse ? (4 - score) : score;
-    }
+    int? uiIndex = _getUiIndex(globalIndex); 
 
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      margin: const EdgeInsets.only(bottom: 12), 
+      padding: const EdgeInsets.all(20), 
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.9),
-        borderRadius: BorderRadius.circular(15),
+        color: Colors.white.withOpacity(0.95),
+        borderRadius: BorderRadius.circular(20), 
+        boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 5, offset: Offset(0, 2))],
       ),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Flexible(
-            child: Text(
-              questionText,
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF4A4A4A), height: 1.2),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
+          // 질문 텍스트
+          Text(
+            questionText,
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: Color(0xFF222222), height: 1.3),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 20),
+          
+          // 선택 버튼들 (1~5)
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: List.generate(5, (optionIndex) {
-              bool isSelected = selectedBtnIndex == optionIndex;
+              bool isSelected = uiIndex == optionIndex;
               return GestureDetector(
                 onTap: () => _setAnswer(globalIndex, optionIndex),
-                child: Container(
-                  width: 40,
-                  height: 40,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  width: isSelected ? 48 : 42, 
+                  height: isSelected ? 48 : 42,
                   decoration: BoxDecoration(
-                    color: isSelected ? const Color(0xFF6BB8B0) : Colors.grey[200],
+                    color: isSelected ? const Color(0xFF6BB8B0) : Colors.grey[100],
+                    border: Border.all(
+                      color: isSelected ? const Color(0xFF6BB8B0) : Colors.grey[300]!,
+                      width: isSelected ? 2 : 1
+                    ),
                     shape: BoxShape.circle,
+                    boxShadow: isSelected 
+                      ? [BoxShadow(color: const Color(0xFF6BB8B0).withOpacity(0.4), blurRadius: 8, offset: const Offset(0, 4))] 
+                      : [],
                   ),
                   alignment: Alignment.center,
                   child: Text(
                     "${optionIndex + 1}",
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: isSelected ? Colors.white : Colors.grey[600]),
+                    style: TextStyle(
+                      fontSize: isSelected ? 20 : 16, 
+                      fontWeight: FontWeight.bold, 
+                      color: isSelected ? Colors.white : Colors.grey[500]
+                    ),
                   ),
                 ),
               );

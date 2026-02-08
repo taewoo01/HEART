@@ -1,12 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
-import 'package:flutter_sound/flutter_sound.dart';
+import 'package:flutter_sound/flutter_sound.dart'; // 껍데기만 유지 (에러 방지)
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
-
-// ❌ main() 함수 삭제됨 (이제 이 파일은 화면 부품으로만 동작합니다)
+import '../services/ai_service.dart';
 
 class NaturalChatScreen extends StatefulWidget {
   const NaturalChatScreen({super.key});
@@ -18,20 +17,13 @@ class NaturalChatScreen extends StatefulWidget {
 class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTickerProviderStateMixin {
   // 🛠️ 도구들
   final stt.SpeechToText _speech = stt.SpeechToText();
-  final FlutterSoundRecorder _recorder = FlutterSoundRecorder();
   final FlutterTts _flutterTts = FlutterTts();
   
-  // ✨ 제미나이 모델 & 채팅 세션
-  late final GenerativeModel _geminiModel;
-  late final ChatSession _chatSession;
-  
-  // 🔑 API KEY (주의: 실제 배포 시에는 숨겨야 합니다)
-  final String _apiKey = 'AIzaSyB3w8463q2SnEnb2S5bgNRl8FA5s-2nfao'; 
-
   // 📊 상태 변수
   bool _isListening = false; 
   bool _isThinking = false;   
-  String _userText = "";      
+  bool _isSpeechAvailable = false; 
+  String _userText = "";       
   String _aiText = "안녕하세요. 오늘 하루는 어떠셨나요?";
 
   // ✨ 애니메이션 관련
@@ -41,6 +33,8 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
   // 📝 대화 기록
   List<Map<String, String>> _chatHistory = [];
 
+  final AIService _aiService = AIService();
+
   @override
   void initState() {
     super.initState();
@@ -49,123 +43,123 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
 
   Future<void> _initSystem() async {
     print("--- 시스템 초기화 시작 ---");
+    
     // 1. 권한 요청
     await [Permission.microphone, Permission.speech].request();
-    
-    // 2. 하드웨어 초기화 (녹음기는 초기화만 하고 실제 사용은 안 함)
-    await _recorder.openRecorder();
-    
-    // TTS 설정
+
+    // 2. STT(음성 인식) 초기화
+    _isSpeechAvailable = await _speech.initialize(
+      onError: (val) => print('STT 에러: $val'),
+      onStatus: (val) {
+        print('STT 상태: $val');
+        // 말하다가 멈추면 자동으로 버튼 상태 변경 등도 가능
+      },
+    );
+    print("STT 초기화 여부: $_isSpeechAvailable");
+
+    // 3. TTS 설정
     await _flutterTts.setLanguage("ko-KR");
     await _flutterTts.setSpeechRate(0.5);
-    await _flutterTts.setPitch(1.0);
 
-    // 3. 🧠 제미나이 초기화
-    _geminiModel = GenerativeModel(
-      model: 'gemini-flash-latest', // 최신 모델명으로 약간 수정해두었습니다
-      apiKey: _apiKey,
-    );
-
-    _chatSession = _geminiModel.startChat(history: [
-      Content.text('''
-        당신은 '마음 치유 상담사'입니다. 
-        사용자는 은둔형 외톨이 성향을 가진 사람입니다.
-        규칙:
-        1. 따뜻하고 부드러운 "해요체" 사용.
-        2. 해결책 강요 금지, 공감 우선.
-        3. 답변은 2~3문장 이내로 짧게.
-      '''),
-      Content.model([TextPart("네, 알겠습니다. 편안하게 말씀해 주세요.")])
-    ]);
-
-    // 첫 인사
-    _addChatMessage("ai", _aiText);
-    _flutterTts.speak(_aiText);
-    print("--- 시스템 초기화 완료 ---");
-  }
-
-  // 🎤 버튼 클릭 시 (토글)
-  void _toggleListening() {
-    if (_isThinking) return; // 생각 중일 땐 클릭 방지
-
-    if (_isListening) {
-      _stopListening(); // 듣고 있었다면 -> 멈추기
-    } else {
-      _startListening(); // 멈춰 있었다면 -> 듣기 시작
+    // 4. 첫 인사
+    if (_chatHistory.isEmpty) {
+      _addChatMessage("ai", _aiText);
+      _flutterTts.speak(_aiText);
     }
   }
 
-  // 👂 듣기 시작 (수정됨: 녹음기 끄고 STT만 집중!)
+  // 🎤 버튼 클릭 시 동작
+  void _toggleListening() {
+    if (_isThinking) return;
+
+    if (_isListening) {
+      _stopListening();
+    } else {
+      _startListening();
+    }
+  }
+
+  // 👂 듣기 시작 (녹음 파일 생성 안 함 -> 마이크 충돌 해결)
   Future<void> _startListening() async {
-    print(">>> 1. 듣기 버튼 눌림 <<<");
-    _flutterTts.stop(); // 말하고 있었다면 끊기
+    print(">>> 1. 듣기 시작 (STT 전용) <<<");
+    await _flutterTts.stop(); // AI 말 끊기
 
     setState(() {
       _isListening = true;
-      _userText = ""; 
+      _userText = ""; // 텍스트 초기화
     });
     _startAnimation();
 
-    bool available = await _speech.initialize(
-      onError: (val) => print('STT 에러: $val'),
-      onStatus: (val) => print('STT 상태: $val'),
-    );
-
-    if (available) {
-      print(">>> 2. STT 엔진 사용 가능 <<<");
-      
-      // 녹음기(Recorder)는 비활성화됨 (STT 전용 모드)
-      print(">>> 3. 녹음기(Recorder)는 비활성화됨 (STT 전용 모드) <<<");
-
-      // ✅ STT 리스닝 설정 강화
-      await _speech.listen(
+    if (_isSpeechAvailable) {
+      // 🚨 중요: startRecorder를 쓰지 않습니다! (마이크를 STT에 양보)
+      _speech.listen(
         onResult: (val) {
-          print("인식된 말: ${val.recognizedWords}");
           setState(() {
-            _userText = val.recognizedWords;
+            _userText = val.recognizedWords; // 실시간으로 화면에 글자 표시
           });
+          print("인식된 글자: ${val.recognizedWords}");
         },
         localeId: 'ko_KR',
-        listenFor: const Duration(seconds: 60), // 30초 -> 60초로 연장
-        pauseFor: const Duration(seconds: 10),   // 5초 -> 10초로 연장 (생각할 시간 줌)
-        cancelOnError: false,                   // 에러 나도 바로 안 꺼지게
+        listenFor: const Duration(seconds: 30),
+        pauseFor: const Duration(seconds: 3), // 3초 쉬면 자동 완료
         listenMode: stt.ListenMode.dictation,
+        cancelOnError: false,
+        partialResults: true, // 말하는 도중에도 글자 띄우기
       );
     } else {
-      print("❌ STT 초기화 실패");
-      setState(() => _isListening = false);
-      _stopAnimation();
+      print("⚠️ STT 초기화 실패 (재시도 필요)");
+      _isSpeechAvailable = await _speech.initialize();
     }
   }
 
   // 🛑 듣기 종료 -> AI 전송
   Future<void> _stopListening() async {
-    print(">>> 4. 듣기 종료 버튼 눌림 <<<");
+    print(">>> 2. 듣기 종료 <<<");
     
-    await _speech.stop(); // 음성 인식만 깔끔하게 종료
+    await _speech.stop(); 
     _stopAnimation();
 
-    // 텍스트가 비어있으면 그냥 종료
-    if (_userText.trim().isEmpty) {
-      print("--- 인식된 텍스트 없음 ---");
-      setState(() => _isListening = false);
-      return;
-    }
-
-    // UI 상태 변경: 듣기 끝 -> 생각 중
     setState(() {
       _isListening = false;
       _isThinking = true; 
     });
 
-    _addChatMessage("user", _userText);
+    // 최종 텍스트 확인
+    String finalText = _userText.trim();
+    
+    // 혹시라도 인식이 안 됐을 경우
+    if (finalText.isEmpty) {
+      if (!mounted) return;
+      setState(() => _isThinking = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("음성을 인식하지 못했어요. 다시 말씀해 주세요! 🎤")),
+      );
+      return; 
+    }
+    
+    // ✅ 내 말풍선 추가 (이제 "(음성메시지)"가 아니라 진짜 글자가 뜹니다!)
+    _addChatMessage("user", finalText);
 
+    // AI에게 전송 (텍스트만 보냄)
+    await _processAiResponse(finalText);
+  }
+
+  // 🤖 AI 응답 처리 (텍스트 기반)
+  Future<void> _processAiResponse(String userText) async {
     try {
-      print(">>> 5. Gemini에게 전송 중: $_userText <<<");
-      final response = await _chatSession.sendMessage(Content.text(_userText));
-      final aiResponseText = response.text ?? "죄송해요, 다시 말씀해 주시겠어요?";
+      print(">>> 3. AI에게 텍스트 전송: $userText <<<");
+      
+      // 💡 핵심 변경 사항:
+      // 녹음 파일(audioFile)을 보내지 않고, 텍스트(userText)를 보냅니다.
+      // 하지만 기존 AI Service가 파일을 요구할 수 있으므로 '빈 파일'을 넣어 에러를 막습니다.
+      
+      final aiResponseText = await _aiService.processVoiceChat(
+        audioFile: File(""), // 👈 빈 파일 (AI Service에서 텍스트가 있으면 파일을 무시하도록 되어있어야 함)
+        userText: userText   // 👈 진짜 데이터는 이것!
+      );
 
-      // AI 응답 처리
+      if (!mounted) return;
+
       setState(() {
         _aiText = aiResponseText;
         _isThinking = false;
@@ -173,16 +167,17 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
       
       _addChatMessage("ai", aiResponseText);
       await _flutterTts.speak(aiResponseText);
-      print(">>> 6. 답변 완료 <<<");
 
     } catch (e) {
-      print("Gemini Error: $e");
+      print("AI Error: $e");
+      if (!mounted) return;
       setState(() => _isThinking = false);
-      _addChatMessage("ai", "인터넷 연결이 불안정한 것 같아요.");
+      _addChatMessage("ai", "죄송해요, 오류가 생겼어요. 다시 말씀해 주시겠어요?");
     }
   }
 
   void _addChatMessage(String role, String text) {
+    if (!mounted) return;
     setState(() {
       _chatHistory.add({"role": role, "text": text});
     });
@@ -191,19 +186,18 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
   void _startAnimation() {
     _animTimer?.cancel();
     _animTimer = Timer.periodic(const Duration(milliseconds: 600), (_) {
-      setState(() => _buttonSize = (_buttonSize == 90.0) ? 110.0 : 90.0);
+      if (mounted) setState(() => _buttonSize = (_buttonSize == 90.0) ? 110.0 : 90.0);
     });
   }
   
   void _stopAnimation() {
     _animTimer?.cancel();
-    setState(() => _buttonSize = 90.0);
+    if (mounted) setState(() => _buttonSize = 90.0);
   }
 
   @override
   void dispose() {
     _animTimer?.cancel();
-    _recorder.closeRecorder();
     _speech.cancel();
     _flutterTts.stop();
     super.dispose();
@@ -214,14 +208,14 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
     return Scaffold(
       backgroundColor: const Color(0xFFF0F4F8),
       appBar: AppBar(
-        title: const Text("마음 상담소"), 
+        title: const Text("마음 상담소", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)), 
         centerTitle: true, 
         elevation: 0, 
-        backgroundColor: Colors.transparent
+        backgroundColor: Colors.transparent,
+        iconTheme: const IconThemeData(color: Colors.black87),
       ),
       body: Column(
         children: [
-          // 📜 채팅 리스트
           Expanded(
             child: ListView.builder(
               padding: const EdgeInsets.all(20),
@@ -232,80 +226,66 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
                 return Align(
                   alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
                   child: Container(
-                    margin: const EdgeInsets.symmetric(vertical: 5),
-                    padding: const EdgeInsets.all(15),
-                    constraints: const BoxConstraints(maxWidth: 260),
+                    margin: const EdgeInsets.symmetric(vertical: 8), 
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                    constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
                     decoration: BoxDecoration(
                       color: isUser ? const Color(0xFF6BB8B0) : Colors.white,
                       borderRadius: BorderRadius.only(
                         topLeft: const Radius.circular(20),
                         topRight: const Radius.circular(20),
-                        bottomLeft: isUser ? const Radius.circular(20) : Radius.zero,
-                        bottomRight: isUser ? Radius.zero : const Radius.circular(20),
+                        bottomLeft: isUser ? const Radius.circular(20) : const Radius.circular(5),
+                        bottomRight: isUser ? const Radius.circular(5) : const Radius.circular(20),
                       ),
-                      boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)],
+                      boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 5, offset: const Offset(0, 2))],
                     ),
                     child: Text(
                       chat['text']!,
-                      style: TextStyle(
-                        color: isUser ? Colors.white : Colors.black87, 
-                        fontSize: 16,
-                        height: 1.4,
-                      ),
+                      style: TextStyle(color: isUser ? Colors.white : Colors.black87, fontSize: 16, height: 1.4),
                     ),
                   ),
                 );
               },
             ),
           ),
-
-          // 🎛️ 하단 컨트롤러 구역
+          
           Container(
-            padding: const EdgeInsets.only(bottom: 40, top: 20),
+            padding: const EdgeInsets.only(bottom: 40, top: 25, left: 20, right: 20),
             decoration: const BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
-              boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, -5))]
+              boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 15, offset: Offset(0, -5))]
             ),
             child: Column(
               children: [
-                // 실시간 인식 텍스트 표시
                 if (_isListening)
                   Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.only(bottom: 20),
                     child: Text(
-                      _userText.isEmpty ? "듣고 있어요..." : _userText,
-                      style: const TextStyle(color: Colors.black54, fontSize: 16),
+                      _userText.isEmpty ? "듣고 있어요... 말씀해 보세요 👂" : _userText,
                       textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 18, color: Color(0xFF6BB8B0), fontWeight: FontWeight.w600),
                     ),
                   )
                 else if (_isThinking) 
-                  const Text("AI가 생각하고 있어요... 🤔", style: TextStyle(color: Colors.grey, fontSize: 14)),
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 20),
+                    child: Text("답변을 생각하고 있어요... 🤔", style: TextStyle(fontSize: 16, color: Colors.grey)),
+                  ),
                 
-                const SizedBox(height: 10),
-
-                // 🔴 왕 버튼 (마이크)
                 GestureDetector(
                   onTap: _toggleListening,
                   child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 600),
-                    width: _buttonSize,
-                    height: _buttonSize,
+                    duration: const Duration(milliseconds: 300),
+                    width: _buttonSize, height: _buttonSize,
                     decoration: BoxDecoration(
-                      color: _isListening ? Colors.redAccent : const Color(0xFF6BB8B0),
+                      color: _isListening ? const Color(0xFFFF6B6B) : const Color(0xFF6BB8B0),
                       shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: (_isListening ? Colors.redAccent : const Color(0xFF6BB8B0)).withOpacity(0.4),
-                          blurRadius: 20,
-                          spreadRadius: 5,
-                        )
-                      ],
+                      boxShadow: [BoxShadow(color: (_isListening ? Colors.red : Colors.teal).withOpacity(0.4), blurRadius: 15, spreadRadius: 5)]
                     ),
                     child: Icon(
                       _isThinking ? Icons.more_horiz : (_isListening ? Icons.stop : Icons.mic),
-                      color: Colors.white,
-                      size: 40,
+                      color: Colors.white, size: 40,
                     ),
                   ),
                 ),
