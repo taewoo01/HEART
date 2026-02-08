@@ -35,6 +35,7 @@ class _MissionPageState extends State<MissionPage> with TickerProviderStateMixin
   // 📌 [NEW] 사진 처리를 위한 변수
   File? _selectedImage;
   final ImagePicker _picker = ImagePicker();
+  final AIService _aiService = AIService();
 
   @override
   void initState() {
@@ -74,7 +75,7 @@ class _MissionPageState extends State<MissionPage> with TickerProviderStateMixin
     setState(() => _isAnalyzing = true); // 로딩 시작
 
     // 1. AI에게 사진 검사 요청
-    final result = await AIService().verifyMissionImage(
+    final result = await _aiService.verifyMissionImage(
       imageFile: _selectedImage!,
       missionTitle: widget.mission.title,
     );
@@ -108,7 +109,7 @@ class _MissionPageState extends State<MissionPage> with TickerProviderStateMixin
     setState(() => _isAnalyzing = true);
 
     // 1. AI에게 상담 요청
-    final aiReply = await AIService().chatWithCounselor(_textController.text);
+    final aiReply = await _aiService.chatWithCounselor(_textController.text);
 
     setState(() => _isAnalyzing = false);
 

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class StorageService {
@@ -7,6 +8,15 @@ class StorageService {
   static const String _keyLevel = "userLevel"; // 현재 등급 내 레벨 (1~50)
   static const String _keyGrade = "userGrade"; // 🆕 등급 (D, C, B, A, Master)
   static const String _keyIsOnboardingDone = "isOnboardingDone";
+  static const String _keyPerSoc = "perSoc";
+  static const String _keyPerIso = "perIso";
+  static const String _keyPerEmo = "perEmo";
+  static const String _keyRecentMissions = "recentMissions";
+  static const String _keyMemories = "memories";
+  static const String _keyAnalysisReason = "analysisReason";
+  static const String _keyChatSummary = "chatSummary";
+  static const String _keyChatKeywords = "chatKeywords";
+  static const String _keyVoiceSignals = "voiceSignals";
 
   // 1. 모든 정보 한 번에 저장하기 (초기 설정용)
   static Future<void> saveUserProfile({
@@ -14,12 +24,22 @@ class StorageService {
     required String location,
     int level = 1,      // 기본값 1
     String grade = 'D', // 🆕 기본값 D등급
+    int perSoc = 50,
+    int perIso = 50,
+    int perEmo = 50,
+    String analysisReason = "",
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyNickname, nickname);
     await prefs.setString(_keyLocation, location);
     await prefs.setInt(_keyLevel, level);
     await prefs.setString(_keyGrade, grade); // 등급 저장
+    await prefs.setInt(_keyPerSoc, perSoc);
+    await prefs.setInt(_keyPerIso, perIso);
+    await prefs.setInt(_keyPerEmo, perEmo);
+    if (analysisReason.isNotEmpty) {
+      await prefs.setString(_keyAnalysisReason, analysisReason);
+    }
     await prefs.setBool(_keyIsOnboardingDone, true); // 설문 완료 표시
   }
 
@@ -35,6 +55,12 @@ class StorageService {
       'location': prefs.getString(_keyLocation) ?? 'Unknown',
       'level': prefs.getInt(_keyLevel) ?? 1,
       'grade': prefs.getString(_keyGrade) ?? 'D', // 🆕 등급 불러오기 (기본 D)
+      'per_soc': prefs.getInt(_keyPerSoc) ?? 50,
+      'per_iso': prefs.getInt(_keyPerIso) ?? 50,
+      'per_emo': prefs.getInt(_keyPerEmo) ?? 50,
+      'analysis_reason': prefs.getString(_keyAnalysisReason) ?? '',
+      'chat_summary': prefs.getString(_keyChatSummary) ?? '',
+      'chat_keywords': prefs.getStringList(_keyChatKeywords) ?? <String>[],
     };
   }
 
@@ -48,9 +74,99 @@ class StorageService {
     await prefs.setInt(_keyLevel, level);
   }
 
+  // 위치 업데이트
+  static Future<void> updateLocation(String location) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyLocation, location);
+  }
+
   // 4. 데이터 초기화 (테스트용 - 로그아웃 기능 등에 사용)
   static Future<void> clearData() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
+  }
+
+  // 최근 미션 저장 (중복 방지용)
+  static Future<void> addRecentMission(String missionTitle, String missionGuide) async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String> current = prefs.getStringList(_keyRecentMissions) ?? [];
+    final entry = "$missionTitle|$missionGuide";
+    final updated = [entry, ...current.where((e) => e != entry)];
+    await prefs.setStringList(_keyRecentMissions, updated.take(5).toList());
+  }
+
+  static Future<List<String>> getRecentMissions() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList(_keyRecentMissions) ?? [];
+  }
+
+  // 로컬 기록 저장
+  static Future<void> addMemoryEntry({
+    required String note,
+    required String iconName,
+    DateTime? timestamp,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String> current = prefs.getStringList(_keyMemories) ?? [];
+    final ts = (timestamp ?? DateTime.now()).millisecondsSinceEpoch;
+    final entry = jsonEncode({
+      'ts': ts,
+      'note': note,
+      'icon': iconName,
+    });
+    final updated = [entry, ...current];
+    await prefs.setStringList(_keyMemories, updated.take(200).toList());
+  }
+
+  static Future<List<Map<String, dynamic>>> getMemoryEntries() async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String> current = prefs.getStringList(_keyMemories) ?? [];
+    return current.map((e) {
+      try {
+        final map = jsonDecode(e) as Map<String, dynamic>;
+        return map;
+      } catch (_) {
+        return <String, dynamic>{};
+      }
+    }).where((e) => e.isNotEmpty).toList();
+  }
+
+  // 대화 요약 저장
+  static Future<void> saveChatSummary(String summary, List<String> keywords) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyChatSummary, summary);
+    await prefs.setStringList(_keyChatKeywords, keywords);
+  }
+
+  // 음성 신호 저장
+  static Future<void> addVoiceSignal({
+    required int durationMs,
+    required int transcriptLength,
+    required bool hasSpeech,
+    DateTime? timestamp,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String> current = prefs.getStringList(_keyVoiceSignals) ?? [];
+    final ts = (timestamp ?? DateTime.now()).millisecondsSinceEpoch;
+    final entry = jsonEncode({
+      'ts': ts,
+      'duration_ms': durationMs,
+      'transcript_len': transcriptLength,
+      'has_speech': hasSpeech,
+    });
+    final updated = [entry, ...current];
+    await prefs.setStringList(_keyVoiceSignals, updated.take(100).toList());
+  }
+
+  static Future<List<Map<String, dynamic>>> getVoiceSignals() async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String> current = prefs.getStringList(_keyVoiceSignals) ?? [];
+    return current.map((e) {
+      try {
+        return jsonDecode(e) as Map<String, dynamic>;
+      } catch (_) {
+        return <String, dynamic>{};
+      }
+    }).where((e) => e.isNotEmpty).toList();
   }
 }

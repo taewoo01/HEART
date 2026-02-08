@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/mission_model.dart';
 import '../models/user_stage.dart';
 import '../services/ai_service.dart'; // 📌 AI 서비스 import
+import '../services/storage_service.dart';
 
 class MissionCompleteScreen extends StatefulWidget {
   final MissionModel mission;
@@ -25,6 +26,23 @@ class MissionCompleteScreen extends StatefulWidget {
 
 class _MissionCompleteScreenState extends State<MissionCompleteScreen> {
   bool _isLoadingBonus = false; // 보너스 미션 로딩 상태
+  final AIService _aiService = AIService();
+  bool _savedMemory = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _saveMemoryIfNeeded();
+  }
+
+  Future<void> _saveMemoryIfNeeded() async {
+    if (_savedMemory) return;
+    _savedMemory = true;
+    await StorageService.addMemoryEntry(
+      note: widget.mission.title,
+      iconName: _iconNameByType(widget.mission.type),
+    );
+  }
 
   // 🎁 보너스 미션 받기 (AI 호출)
   Future<void> _fetchAndStartBonusMission() async {
@@ -33,7 +51,7 @@ class _MissionCompleteScreenState extends State<MissionCompleteScreen> {
     try {
       // 📌 [수정됨] 인자를 모두 제거했습니다!
       // AIService 내부에서 StorageService를 통해 레벨을 알아서 확인합니다.
-      final MissionModel? bonusMission = await AIService().getBonusMission();
+      final MissionModel? bonusMission = await _aiService.getBonusMission();
 
       if (!mounted) return;
       setState(() => _isLoadingBonus = false);
@@ -56,6 +74,21 @@ class _MissionCompleteScreenState extends State<MissionCompleteScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), backgroundColor: Colors.redAccent.withOpacity(0.8)),
     );
+  }
+
+  String _iconNameByType(MissionType type) {
+    switch (type) {
+      case MissionType.photo:
+        return "camera";
+      case MissionType.hold:
+        return "fingerprint";
+      case MissionType.text:
+        return "edit";
+      case MissionType.voice:
+        return "mic";
+      case MissionType.step:
+        return "walk";
+    }
   }
 
   @override

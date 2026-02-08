@@ -20,6 +20,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   WeatherType currentWeather = WeatherType.sunny;
   bool _isLoading = true;
   late AnimationController _breathingController;
+  final AIService _aiService = AIService();
 
   // 👤 유저 정보
   String _nickname = "여행자";
@@ -79,6 +80,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         realWeather = weatherInfo.type;
         // 위치 텍스트를 API에서 받은 도시 이름으로 업데이트
         _location = weatherInfo.cityName;
+        await StorageService.updateLocation(_location);
         
         // Enum -> String 변환 (AI 전달용)
         aiWeatherString = _getWeatherString(realWeather);
@@ -86,10 +88,21 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
       // 3. 🤖 AI에게 맞춤 미션 요청 (수정된 부분!)
       // 이제 위치와 날씨 정보를 함께 전달합니다.
-      AIService aiService = AIService();
-      String aiMissionText = await aiService.generateDailyMission(
+      final aiMission = await _aiService.generateDailyMission(
         _location,      // 예: "서울"
         aiWeatherString // 예: "Rainy"
+      );
+      final String aiMissionText = (aiMission['mission_guide'] ?? "").toString();
+      final String aiMissionTitle = (aiMission['mission_title'] ?? "").toString();
+      final int aiMissionXp = aiMission['xp_reward'] is int ? aiMission['xp_reward'] : 100;
+      final String aiStrategy = (aiMission['strategy_name'] ?? "").toString();
+      final String aiReasoning = (aiMission['reasoning'] ?? "").toString();
+      final String aiVision = (aiMission['vision_object'] ?? "").toString();
+      final String aiMissionTypeStr = (aiMission['mission_type'] ?? "").toString();
+      final MissionType aiMissionType = _resolveMissionType(
+        aiMissionTypeStr,
+        visionObject: aiVision,
+        fallbackGrade: _grade,
       );
 
       if (mounted) {
@@ -97,12 +110,19 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           currentWeather = realWeather;
           
           _todaysMission = MissionModel(
-            title: _getMissionTitleByGrade(_grade),
-            content: aiMissionText, // AI가 만든 텍스트 적용
-            type: _getMissionTypeByGrade(_grade),
-            xp: 100,
-            difficulty: _grade,
+            title: aiMissionTitle.isNotEmpty ? aiMissionTitle : _getMissionTitleByGrade(_grade),
+            content: aiMissionText.isNotEmpty ? aiMissionText : _getBackupMission().content,
+            type: aiMissionType,
+            xp: aiMissionXp,
+            difficulty: _difficultyByXp(aiMissionXp, _grade),
             message: "$_nickname님, 천천히 시작해봐요.",
+            strategyName: aiStrategy.isNotEmpty ? aiStrategy : null,
+            reasoning: aiReasoning.isNotEmpty ? aiReasoning : null,
+            visionObject: aiVision.isNotEmpty ? aiVision : null,
+          );
+          StorageService.addRecentMission(
+            aiMissionTitle.isNotEmpty ? aiMissionTitle : _getMissionTitleByGrade(_grade),
+            aiMissionText.isNotEmpty ? aiMissionText : _getBackupMission().content,
           );
           
           _isMissionCompleted = false;
@@ -147,6 +167,65 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     if (grade == 'C') return MissionType.photo;
     if (grade == 'B') return MissionType.step;
     return MissionType.text;
+  }
+
+  MissionType _parseMissionType(String typeStr, {required String fallbackGrade}) {
+    switch (typeStr.toLowerCase()) {
+      case 'photo':
+        return MissionType.photo;
+      case 'hold':
+        return MissionType.hold;
+      case 'step':
+        return MissionType.step;
+      case 'voice':
+        return MissionType.voice;
+      case 'text':
+        return MissionType.text;
+      default:
+        return _getMissionTypeByGrade(fallbackGrade);
+    }
+  }
+
+  MissionType _resolveMissionType(
+    String typeStr, {
+    required String visionObject,
+    required String fallbackGrade,
+  }) {
+    final parsed = _parseMissionType(typeStr, fallbackGrade: fallbackGrade);
+    final corrected = _coerceByGrade(parsed, fallbackGrade);
+    if (visionObject.trim().isNotEmpty && corrected != MissionType.photo) {
+      return MissionType.photo;
+    }
+    return corrected;
+  }
+
+  MissionType _coerceByGrade(MissionType type, String grade) {
+    switch (grade) {
+      case 'D':
+        return (type == MissionType.text || type == MissionType.hold) ? type : MissionType.hold;
+      case 'C':
+        return (type == MissionType.photo || type == MissionType.text || type == MissionType.hold)
+            ? type
+            : MissionType.photo;
+      case 'B':
+        return (type == MissionType.step || type == MissionType.photo || type == MissionType.text)
+            ? type
+            : MissionType.step;
+      case 'A':
+        return (type == MissionType.text || type == MissionType.photo || type == MissionType.voice || type == MissionType.step)
+            ? type
+            : MissionType.text;
+      default:
+        return type;
+    }
+  }
+
+  String _difficultyByXp(int xp, String fallbackGrade) {
+    if (xp >= 100) return 'S';
+    if (xp >= 85) return 'A';
+    if (xp >= 65) return 'B';
+    if (xp >= 45) return 'C';
+    return fallbackGrade.isNotEmpty ? fallbackGrade : 'D';
   }
 
   MissionModel _getBackupMission() {
@@ -300,36 +379,46 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           _buildWeatherDecorations(),
           
           SafeArea(
-            child: Column(
-              children: [
-                const SizedBox(height: 20),
-                // 상단 정보바
-                _buildTopBar(context, textColor, stateTitle),
-                
-                const Spacer(),
-                
-                // 중앙 AI Orb & 미션 카드
-                Column(
-                  children: [
-                    _buildAIOrb(),
-                    const SizedBox(height: 15),
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 500),
-                      child: _isMissionCompleted 
-                          ? _buildCompletedCard() 
-                          : QuestCard(key: ValueKey(_todaysMission.content), mission: _todaysMission), 
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.only(bottom: 40),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                    child: Column(
+                      children: [
+                        const SizedBox(height: 20),
+                        // 상단 정보바
+                        _buildTopBar(context, textColor, stateTitle),
+
+                        const SizedBox(height: 30),
+
+                        // 중앙 AI Orb & 미션 카드
+                        Column(
+                          children: [
+                            _buildAIOrb(),
+                            const SizedBox(height: 15),
+                            AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 500),
+                              child: _isMissionCompleted
+                                  ? _buildCompletedCard()
+                                  : QuestCard(key: ValueKey(_todaysMission.content), mission: _todaysMission),
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 30),
+
+                        // 하단 버튼 (완료 시 휴식 메시지)
+                        _isMissionCompleted ? _buildRestMessage() : _buildActionButtons(context),
+
+                        // 버튼에 가려지지 않게 여백
+                        const SizedBox(height: 80),
+                      ],
                     ),
-                  ],
-                ),
-                
-                const Spacer(),
-                
-                // 하단 버튼 (완료 시 휴식 메시지)
-                _isMissionCompleted ? _buildRestMessage() : _buildActionButtons(context),
-                
-                // 버튼에 가려지지 않게 여백
-                const SizedBox(height: 80), 
-              ],
+                  ),
+                );
+              },
             ),
           ),
         ],

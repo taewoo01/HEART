@@ -13,6 +13,9 @@ class MissionModel {
   final int xp;            // 보상 경험치
   final String message;    // 격려의 한마디
   final MissionType type;
+  final String? strategyName; // 적용 전략 이름
+  final String? reasoning;    // 전략 선택 이유
+  final String? visionObject; // 인증 객체
 
   MissionModel({
     required this.title,
@@ -21,6 +24,9 @@ class MissionModel {
     required this.xp,
     required this.message,
     required this.type,
+    this.strategyName,
+    this.reasoning,
+    this.visionObject,
   });
 
   // 📌 [추가됨] AI가 보낸 JSON 데이터를 MissionModel로 변환하는 생성자
@@ -33,6 +39,9 @@ class MissionModel {
       xp: (json['xp'] is int) ? json['xp'] : 50, // 숫자가 아니면 기본 50
       message: json['comment'] ?? "당신의 오늘을 응원합니다.",
       type: _stringToType(json['type']), // 문자열을 enum으로 변환
+      strategyName: json['strategy_name'],
+      reasoning: json['reasoning'],
+      visionObject: json['vision_object'],
     );
   }
 

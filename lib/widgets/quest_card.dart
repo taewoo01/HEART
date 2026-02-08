@@ -64,6 +64,20 @@ class QuestCard extends StatelessWidget {
               ),
               const SizedBox(height: 20),
 
+              if ((mission.strategyName ?? "").isNotEmpty ||
+                  (mission.reasoning ?? "").isNotEmpty ||
+                  (mission.visionObject ?? "").isNotEmpty) ...[
+                Divider(color: Colors.grey.withOpacity(0.2), thickness: 1),
+                const SizedBox(height: 12),
+                if ((mission.strategyName ?? "").isNotEmpty)
+                  _buildInfoRow("전략", mission.strategyName!),
+                if ((mission.reasoning ?? "").isNotEmpty)
+                  _buildInfoRow("이유", mission.reasoning!),
+                if ((mission.visionObject ?? "").isNotEmpty)
+                  _buildInfoRow("인증 객체", mission.visionObject!),
+                const SizedBox(height: 12),
+              ],
+
               // 3. 하단 정보 (XP 보상 + 격려 메시지)
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
@@ -134,6 +148,43 @@ class QuestCard extends StatelessWidget {
           fontWeight: FontWeight.bold,
           fontSize: 12,
         ),
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE8EEF2),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF2D3436),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Color(0xFF4A4A4A),
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

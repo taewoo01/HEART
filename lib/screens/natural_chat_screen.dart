@@ -2,10 +2,13 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
-import 'package:flutter_sound/flutter_sound.dart'; // 껍데기만 유지 (에러 방지)
+import 'package:flutter_sound/flutter_sound.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart';
 import '../services/ai_service.dart';
+import 'local_data_screen.dart';
+import '../services/storage_service.dart';
 
 class NaturalChatScreen extends StatefulWidget {
   const NaturalChatScreen({super.key});
@@ -17,6 +20,7 @@ class NaturalChatScreen extends StatefulWidget {
 class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTickerProviderStateMixin {
   // 🛠️ 도구들
   final stt.SpeechToText _speech = stt.SpeechToText();
+  final FlutterSoundRecorder _recorder = FlutterSoundRecorder();
   final FlutterTts _flutterTts = FlutterTts();
   
   // 📊 상태 변수
@@ -25,19 +29,25 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
   bool _isSpeechAvailable = false; 
   String _userText = "";       
   String _aiText = "안녕하세요. 오늘 하루는 어떠셨나요?";
+  String? _recordedFilePath;
+  bool _isRecording = false;
+  DateTime? _recordingStartedAt;
 
   // ✨ 애니메이션 관련
   double _buttonSize = 90.0;
   Timer? _animTimer;
 
   // 📝 대화 기록
+  static List<Map<String, String>> _cachedHistory = [];
   List<Map<String, String>> _chatHistory = [];
+  final ScrollController _scrollController = ScrollController();
 
   final AIService _aiService = AIService();
 
   @override
   void initState() {
     super.initState();
+    _chatHistory = List<Map<String, String>>.from(_cachedHistory);
     _initSystem();
   }
 
@@ -47,7 +57,10 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
     // 1. 권한 요청
     await [Permission.microphone, Permission.speech].request();
 
-    // 2. STT(음성 인식) 초기화
+    // 2. 녹음기 초기화
+    await _recorder.openRecorder();
+
+    // 3. STT(음성 인식) 초기화
     _isSpeechAvailable = await _speech.initialize(
       onError: (val) => print('STT 에러: $val'),
       onStatus: (val) {
@@ -57,11 +70,11 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
     );
     print("STT 초기화 여부: $_isSpeechAvailable");
 
-    // 3. TTS 설정
+    // 4. TTS 설정
     await _flutterTts.setLanguage("ko-KR");
     await _flutterTts.setSpeechRate(0.5);
 
-    // 4. 첫 인사
+    // 5. 첫 인사
     if (_chatHistory.isEmpty) {
       _addChatMessage("ai", _aiText);
       _flutterTts.speak(_aiText);
@@ -79,9 +92,9 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
     }
   }
 
-  // 👂 듣기 시작 (녹음 파일 생성 안 함 -> 마이크 충돌 해결)
+  // 👂 듣기 시작 (STT + 로컬 녹음)
   Future<void> _startListening() async {
-    print(">>> 1. 듣기 시작 (STT 전용) <<<");
+    print(">>> 1. 듣기 시작 (STT + 녹음) <<<");
     await _flutterTts.stop(); // AI 말 끊기
 
     setState(() {
@@ -90,8 +103,28 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
     });
     _startAnimation();
 
-    if (_isSpeechAvailable) {
-      // 🚨 중요: startRecorder를 쓰지 않습니다! (마이크를 STT에 양보)
+    // 🎙️ 녹음 파일 생성 (앱 내부 저장소)
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final fileName = "voice_${DateTime.now().millisecondsSinceEpoch}.m4a";
+      _recordedFilePath = "${dir.path}/$fileName";
+
+      await _recorder.startRecorder(
+        toFile: _recordedFilePath,
+        codec: Codec.aacMP4,
+      );
+      _isRecording = true;
+      _recordingStartedAt = DateTime.now();
+      print("녹음 시작: $_recordedFilePath");
+    } catch (e) {
+      print("녹음 시작 실패: $e");
+      _recordedFilePath = null;
+      _isRecording = false;
+      _recordingStartedAt = null;
+    }
+
+    // ⚠️ 녹음과 STT 동시 사용 시 충돌 가능 → 녹음이 켜지면 STT는 건너뜀
+    if (_isSpeechAvailable && !_isRecording) {
       _speech.listen(
         onResult: (val) {
           setState(() {
@@ -106,7 +139,7 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
         cancelOnError: false,
         partialResults: true, // 말하는 도중에도 글자 띄우기
       );
-    } else {
+    } else if (!_isRecording) {
       print("⚠️ STT 초기화 실패 (재시도 필요)");
       _isSpeechAvailable = await _speech.initialize();
     }
@@ -116,7 +149,19 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
   Future<void> _stopListening() async {
     print(">>> 2. 듣기 종료 <<<");
     
-    await _speech.stop(); 
+    await _speech.stop();
+    if (_isRecording) {
+      try {
+        await _recorder.stopRecorder();
+        _isRecording = false;
+        if (_recordedFilePath != null) {
+          print("녹음 종료: $_recordedFilePath");
+        }
+      } catch (e) {
+        _isRecording = false;
+        print("녹음 종료 실패: $e");
+      }
+    }
     _stopAnimation();
 
     setState(() {
@@ -126,37 +171,87 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
 
     // 최종 텍스트 확인
     String finalText = _userText.trim();
-    
-    // 혹시라도 인식이 안 됐을 경우
-    if (finalText.isEmpty) {
+    File? audioFile;
+    if (_recordedFilePath != null) {
+      final candidate = File(_recordedFilePath!);
+      if (await candidate.exists()) {
+        final size = await candidate.length();
+        if (size > 0) {
+          audioFile = candidate;
+        } else {
+          print("⚠️ 녹음 파일 크기 0: $_recordedFilePath");
+        }
+      } else {
+        print("⚠️ 녹음 파일 없음: $_recordedFilePath");
+      }
+    }
+
+    if (finalText.isEmpty && audioFile == null) {
       if (!mounted) return;
       setState(() => _isThinking = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("음성을 인식하지 못했어요. 다시 말씀해 주세요! 🎤")),
+        const SnackBar(content: Text("음성이 제대로 녹음되지 않았어요. 다시 말씀해 주세요! 🎤")),
       );
       return; 
     }
     
-    // ✅ 내 말풍선 추가 (이제 "(음성메시지)"가 아니라 진짜 글자가 뜹니다!)
-    _addChatMessage("user", finalText);
+    // ✅ 내 말풍선 추가
+    if (finalText.isNotEmpty) {
+      _addChatMessage("user", finalText);
+    } else {
+      _addChatMessage("user", "(음성 메시지)");
+    }
 
-    // AI에게 전송 (텍스트만 보냄)
-    await _processAiResponse(finalText);
+    // AI에게 전송 (텍스트 우선, 없으면 오디오 전사)
+    final started = _recordingStartedAt;
+    final durationMs = started != null ? DateTime.now().difference(started).inMilliseconds : null;
+    _recordingStartedAt = null;
+    await _processAiResponse(finalText, audioFile: audioFile, durationMs: durationMs);
   }
 
   // 🤖 AI 응답 처리 (텍스트 기반)
-  Future<void> _processAiResponse(String userText) async {
+  Future<void> _processAiResponse(String userText, {File? audioFile, int? durationMs}) async {
     try {
       print(">>> 3. AI에게 텍스트 전송: $userText <<<");
-      
-      // 💡 핵심 변경 사항:
-      // 녹음 파일(audioFile)을 보내지 않고, 텍스트(userText)를 보냅니다.
-      // 하지만 기존 AI Service가 파일을 요구할 수 있으므로 '빈 파일'을 넣어 에러를 막습니다.
+
+      String finalText = userText;
+      if (finalText.isEmpty && audioFile != null) {
+        try {
+          finalText = await _aiService.transcribeAudio(audioFile);
+          if (finalText.isNotEmpty) {
+            // 방금 추가한 (음성 메시지) 버블을 실제 텍스트로 교체
+            if (_chatHistory.isNotEmpty &&
+                _chatHistory.last['role'] == 'user' &&
+                _chatHistory.last['text'] == '(음성 메시지)') {
+              setState(() {
+                _chatHistory[_chatHistory.length - 1] = {
+                  "role": "user",
+                  "text": finalText
+                };
+                _cachedHistory = List<Map<String, String>>.from(_chatHistory);
+              });
+              _scrollToBottom();
+            }
+          }
+        } catch (e) {
+          print("전사 실패: $e");
+        }
+      }
       
       final aiResponseText = await _aiService.processVoiceChat(
-        audioFile: File(""), // 👈 빈 파일 (AI Service에서 텍스트가 있으면 파일을 무시하도록 되어있어야 함)
-        userText: userText   // 👈 진짜 데이터는 이것!
+        userText: finalText,
+        audioFile: audioFile,
+        chatHistory: _chatHistory,
       );
+
+      // 음성 신호 저장 (길이/빈도 지표)
+      if (durationMs != null) {
+        await StorageService.addVoiceSignal(
+          durationMs: durationMs,
+          transcriptLength: finalText.length,
+          hasSpeech: finalText.isNotEmpty,
+        );
+      }
 
       if (!mounted) return;
 
@@ -180,6 +275,20 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
     if (!mounted) return;
     setState(() {
       _chatHistory.add({"role": role, "text": text});
+      _cachedHistory = List<Map<String, String>>.from(_chatHistory);
+    });
+    _scrollToBottom();
+  }
+
+  void _scrollToBottom() {
+    if (!_scrollController.hasClients) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
     });
   }
 
@@ -197,10 +306,26 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
 
   @override
   void dispose() {
+    _saveChatSummary();
     _animTimer?.cancel();
+    _scrollController.dispose();
+    _recorder.closeRecorder();
     _speech.cancel();
     _flutterTts.stop();
     super.dispose();
+  }
+
+  void _saveChatSummary() {
+    if (_chatHistory.isEmpty) return;
+    // fire-and-forget
+    _aiService.summarizeChat(_chatHistory).then((summary) {
+      if (summary == null) return;
+      final String text = (summary['summary'] ?? '').toString();
+      final List<String> keywords = (summary['keywords'] is List)
+          ? (summary['keywords'] as List).map((e) => e.toString()).toList()
+          : <String>[];
+      StorageService.saveChatSummary(text, keywords);
+    });
   }
 
   @override
@@ -213,11 +338,24 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
         elevation: 0, 
         backgroundColor: Colors.transparent,
         iconTheme: const IconThemeData(color: Colors.black87),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.folder_open),
+            tooltip: "로컬 데이터 확인",
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const LocalDataScreen()),
+              );
+            },
+          )
+        ],
       ),
       body: Column(
         children: [
           Expanded(
             child: ListView.builder(
+              controller: _scrollController,
               padding: const EdgeInsets.all(20),
               itemCount: _chatHistory.length,
               itemBuilder: (context, index) {

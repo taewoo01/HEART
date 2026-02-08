@@ -1,9 +1,7 @@
-import 'dart:convert'; 
 import 'package:flutter/material.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart'; // 👈 1. 패키지 임포트
-import 'package:google_generative_ai/google_generative_ai.dart';
 import '../utils/theme_utils.dart';
 import '../services/storage_service.dart';
+import '../services/ai_service.dart';
 
 class OnboardingScreen extends StatefulWidget {
   final VoidCallback onComplete; 
@@ -22,8 +20,7 @@ class OnboardingScreen extends StatefulWidget {
 }
 
 class _OnboardingScreenState extends State<OnboardingScreen> {
-  // 🔐 2. .env에서 API 키 가져오기
-  final String _apiKey = dotenv.env['GEMINI_API_KEY'] ?? ""; 
+  final AIService _aiService = AIService();
 
   final int _questionsPerPage = 5; 
   int _currentPageIndex = 0;
@@ -111,11 +108,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _finishSurvey() async {
-    // 키 체크 (개발자 디버깅용)
-    if (_apiKey.isEmpty) {
-      print("⚠️ API Key가 없습니다. .env 파일을 확인해주세요.");
-    }
-
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -139,46 +131,36 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     String aiMessage = "분석을 완료했습니다.";
 
     try {
-      final model = GenerativeModel(
-        // ⚠️ 3. 모델 이름 안정적인 버전으로 통일
-        model: 'gemini-flash-latest', 
-        apiKey: _apiKey,
-        generationConfig: GenerationConfig(
-          responseMimeType: 'application/json', 
-          temperature: 0.7,
-        ),
+      final surveyData = _buildSurveyDataForAI();
+      final parsedData = await _aiService.analyzeSurveyGrade(
+        nickname: widget.nickname,
+        location: widget.location,
+        surveyData: surveyData,
       );
 
-      final surveyData = _buildSurveyDataForAI();
-      final prompt = '''
-        당신은 전문 심리 상담가입니다. 
-        [사용자 정보] 닉네임: ${widget.nickname}, 지역: ${widget.location}
-        [설문 데이터]
-        $surveyData
-        
-        [임무]
-        위 데이터를 바탕으로 사회적 고립 등급(Grade)을 판단하고 JSON으로 출력하세요.
-        - A: 매우 건강하고 활발함
-        - B: 양호함, 일상생활 원만
-        - C: 다소 위축됨, 관심 필요
-        - D: 고립 위험, 적극적 케어 필요
-
-        형식: {"grade": "C", "score": 65, "message": "따뜻한 한마디(2문장)"}
-      ''';
-
-      final response = await model.generateContent([Content.text(prompt)]);
-      
-      String rawText = response.text ?? "{}";
-      int startIndex = rawText.indexOf('{');
-      int endIndex = rawText.lastIndexOf('}');
-      if (startIndex != -1 && endIndex != -1) {
-        rawText = rawText.substring(startIndex, endIndex + 1);
+      if (parsedData == null) {
+        throw Exception("AI 분석 결과가 비었습니다.");
       }
 
-      final parsedData = jsonDecode(rawText);
       userGrade = parsedData['grade'] ?? 'C';
       calculatedScore = parsedData['score'] is int ? parsedData['score'] : 50;
       aiMessage = parsedData['message'] ?? "만나서 반가워요.";
+
+      final int perSoc = parsedData['per_soc'] is int ? parsedData['per_soc'] : 50;
+      final int perIso = parsedData['per_iso'] is int ? parsedData['per_iso'] : 50;
+      final int perEmo = parsedData['per_emo'] is int ? parsedData['per_emo'] : 50;
+      final String analysisReason = (parsedData['reasoning'] ?? "").toString();
+
+      await StorageService.saveUserProfile(
+        nickname: widget.nickname,
+        location: widget.location,
+        level: 1,
+        grade: userGrade,
+        perSoc: perSoc.clamp(0, 100),
+        perIso: perIso.clamp(0, 100),
+        perEmo: perEmo.clamp(0, 100),
+        analysisReason: analysisReason,
+      );
 
     } catch (e) {
       print("AI 분석 실패 (Fallback): $e");
@@ -189,6 +171,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       else if (totalScore >= 30) userGrade = 'B';
       else userGrade = 'A';
       aiMessage = "당신의 마음에 귀 기울일게요.";
+
+      await StorageService.saveUserProfile(
+        nickname: widget.nickname,
+        location: widget.location,
+        level: 1,
+        grade: userGrade,
+        perSoc: 50,
+        perIso: 50,
+        perEmo: 50,
+      );
     }
 
     Color stateColor = (userGrade == 'D' || userGrade == 'C') 
@@ -198,12 +190,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     if (!mounted) return;
     Navigator.pop(context);
 
-    await StorageService.saveUserProfile(
-      nickname: widget.nickname,
-      location: widget.location,
-      level: 1,
-      grade: userGrade,
-    );
+    // 저장은 위에서 완료됨
 
     showDialog(
       context: context,
