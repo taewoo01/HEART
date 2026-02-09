@@ -101,61 +101,46 @@
 
 ### 📦 App Setup
 
-1. 저장소 클론
+## 🚀 Setup
+
+### App
 ```bash
 git clone https://github.com/taewoo01/HEART.git
 cd HEART
-패키지 설치
-bash
-
 flutter pub get
-.env 설정
+.env
+
 env
 
 OPENAI_API_KEY=sk-proj-your-api-key-here
 AUDIO_ANALYSIS_BASE_URL=http://<PC_IP>:8000
-앱 실행
 bash
 
 flutter run
-🖥️ Server Setup (Audio Analysis)
+Server (Audio Analysis)
 bash
 
 cd server
 python -m venv .venv
-source .venv/Scripts/activate   # Windows Git Bash 기준
+source .venv/Scripts/activate   # Windows Git Bash
 pip install -r requirements.txt
 export OPENAI_API_KEY=sk-proj-your-api-key-here
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 📂 Project Structure
-bash
 
 HEART/
 ├── lib/
 │   ├── main.dart
-│   ├── screens/
-│   │   ├── onboarding_screen.dart
-│   │   ├── main_screen.dart
-│   │   ├── natural_chat_screen.dart
-│   │   ├── history_page.dart
-│   │   ├── local_data_screen.dart
-│   │   └── admin_dashboard_page.dart
-│   ├── services/
-│   │   ├── ai_service.dart
-│   │   ├── audio_analysis_service.dart
-│   │   └── storage_service.dart
+│   ├── screens/ (onboarding, main, natural_chat, history, local_data, admin_dashboard)
+│   ├── services/ (ai_service, audio_analysis_service, storage_service)
 │   └── models/
-├── server/
-│   ├── app/
-│   ├── requirements.txt
-│   └── README.md
+├── server/ (FastAPI)
 ├── assets/
 ├── .env
 └── pubspec.yaml
 👨‍💻 Team
-Team: 이렇게 삽니다
-
 Role	Name	Dept.	Contact
+
 Team Leader	곽호영	전자공학부	khy05300@naver.com
 Team Member	김태우	전자공학부	xodn9402@naver.com
 "우리의 기술은 사용자를 통제하는 것이 아니라, 스스로 문을 열고 나갈 수 있도록 돕는 따뜻한 손길이 되는 것을 목표로 합니다."
