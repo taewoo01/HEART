@@ -104,30 +104,63 @@
 ## 🚀 Setup
 
 ### App
+## 🚀 실행 방법 (처음 하는 사람용)
+
+### 1) 저장소 클론 & 앱 의존성 설치
 ```bash
 git clone https://github.com/taewoo01/HEART.git
 cd HEART
 flutter pub get
-.env
+2) 환경 변수 설정 (.env 파일)
+프로젝트 루트에 .env 파일을 만들고 아래처럼 입력합니다.
 
 env
 
 OPENAI_API_KEY=sk-proj-your-api-key-here
 AUDIO_ANALYSIS_BASE_URL=http://<PC_IP>:8000
+<PC_IP> 는 서버를 실행하는 PC의 IP 주소입니다.
+예: http://10.207.184.244:8000
+
+3) 앱 실행
 bash
 
 flutter run
-Server (Audio Analysis)
+🖥️ 서버 실행 (Audio Analysis)
+1) 서버 폴더로 이동
 bash
 
 cd server
+2) 가상환경 생성 & 실행
+bash
+
 python -m venv .venv
-source .venv/Scripts/activate   # Windows Git Bash
+source .venv/Scripts/activate   # Windows Git Bash 기준
+3) 패키지 설치
+bash
+
 pip install -r requirements.txt
+4) OpenAI 키 설정
+bash
+
 export OPENAI_API_KEY=sk-proj-your-api-key-here
+5) 서버 실행
+bash
+
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 📂 Project Structure
 
+HEART/
+├── lib/
+├── server/
+├── assets/
+├── .env
+└── pubspec.yaml
+
+
+```bash
+📂 Project Structure
+
+```bash
 HEART/
 ├── lib/
 │   ├── main.dart
