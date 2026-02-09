@@ -8,29 +8,36 @@ class QuestCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final screenHeight = MediaQuery.of(context).size.height;
+    final maxCardHeight = screenHeight * 0.44;
+
     return Column(
       children: [
         // 말풍선 꼬리 (디자인 요소)
         Icon(Icons.arrow_drop_up, size: 45, color: Colors.white.withOpacity(0.95)),
         
         // 퀘스트 카드 본체
-        Container(
-          width: double.infinity,
-          margin: const EdgeInsets.symmetric(horizontal: 30),
-          padding: const EdgeInsets.all(25),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.95),
-            borderRadius: BorderRadius.circular(25),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.1),
-                blurRadius: 20,
-                offset: const Offset(0, 10),
-              ),
-            ],
-          ),
-          child: Column(
-            children: [
+        ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxCardHeight),
+          child: Container(
+            width: double.infinity,
+            margin: const EdgeInsets.symmetric(horizontal: 30),
+            padding: const EdgeInsets.all(25),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.95),
+              borderRadius: BorderRadius.circular(25),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.1),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: SingleChildScrollView(
+              physics: const BouncingScrollPhysics(),
+              child: Column(
+                children: [
               // 1. 헤더: 난이도 뱃지 + 제목
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -116,7 +123,9 @@ class QuestCard extends StatelessWidget {
                   ],
                 ),
               ),
-            ],
+                ],
+              ),
+            ),
           ),
         ),
       ],

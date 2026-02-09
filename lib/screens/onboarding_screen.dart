@@ -25,6 +25,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final int _questionsPerPage = 5; 
   int _currentPageIndex = 0;
   final Map<int, int> _userAnswers = {};
+  final ScrollController _scrollController = ScrollController();
 
   // 📝 질문 리스트
   final List<Map<String, dynamic>> _allQuestions = [
@@ -56,11 +57,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   ];
 
   void _setAnswer(int globalIndex, int selectedOptionIndex) {
-    bool isReverse = _allQuestions[globalIndex]['isReverse'];
-    int score = isReverse ? (4 - selectedOptionIndex) : selectedOptionIndex;
-    
+    final bool isReverse = _allQuestions[globalIndex]['isReverse'];
+    final int score = isReverse ? (4 - selectedOptionIndex) : selectedOptionIndex;
+    final int? current = _userAnswers[globalIndex];
+
     setState(() {
-      _userAnswers[globalIndex] = score; 
+      if (current == score) {
+        _userAnswers.remove(globalIndex);
+      } else {
+        _userAnswers[globalIndex] = score;
+      }
     });
   }
   
@@ -77,6 +83,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       setState(() {
         _currentPageIndex++;
       });
+      _scrollToTop();
     } else {
       _finishSurvey();
     }
@@ -289,6 +296,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 // 3. 질문 리스트
                 Expanded(
                   child: ListView.builder(
+                    controller: _scrollController,
                     itemCount: currentQuestions.length,
                     itemBuilder: (context, index) {
                       int globalIndex = startIndex + index;
@@ -389,5 +397,20 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         ],
       ),
     );
+  }
+
+  void _scrollToTop() {
+    if (!_scrollController.hasClients) return;
+    _scrollController.animateTo(
+      0,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+    );
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 }

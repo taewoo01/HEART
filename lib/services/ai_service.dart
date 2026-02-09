@@ -154,6 +154,9 @@ Emotion Keywords: ${chatKeywords.isEmpty ? "없음" : chatKeywords}
     final int perSoc = userContext['per_soc'] ?? 50;
     final int perIso = userContext['per_iso'] ?? 50;
     final int perEmo = userContext['per_emo'] ?? 50;
+    final String chatSummary = (userContext['chat_summary'] ?? '').toString();
+    final List<dynamic> chatKeywordsRaw = userContext['chat_keywords'] ?? <dynamic>[];
+    final String chatKeywords = chatKeywordsRaw.isNotEmpty ? chatKeywordsRaw.join(', ') : '';
 
     final String riskSoc = _riskLabel(perSoc);
     final String riskIso = _riskLabel(perIso);
@@ -200,6 +203,10 @@ Emotion Keywords: ${chatKeywords.isEmpty ? "없음" : chatKeywords}
 ### 2-3. Recent Missions (avoid repetition)
 $recentText
 같은 미션은 반복하지 말고, 의미만 비슷해도 표현을 바꿔 다른 미션처럼 보이게 하라.
+
+### 2-4. Recent Conversation Summary (if any)
+- Summary: ${chatSummary.isEmpty ? "없음" : chatSummary}
+- Emotion Keywords: ${chatKeywords.isEmpty ? "없음" : chatKeywords}
 
 ### 3. HQ-25 Factor Analysis (정밀 진단)
 각 요인의 점수(%)에 따라 심각도를 판단하라.
@@ -872,15 +879,15 @@ Time: $timeNow
   List<String> _allowedTypesByGrade(String grade) {
     switch (grade) {
       case 'D':
-        return ['hold', 'text'];
+        return ['hold', 'text', 'voice'];
       case 'C':
-        return ['photo', 'text', 'hold'];
+        return ['photo', 'text', 'hold', 'voice'];
       case 'B':
-        return ['step', 'photo', 'text'];
+        return ['step', 'photo', 'text', 'voice'];
       case 'A':
         return ['text', 'photo', 'voice', 'step'];
       default:
-        return ['text', 'photo'];
+        return ['text', 'photo', 'voice'];
     }
   }
 

@@ -14,17 +14,26 @@ class NaturalChatScreen extends StatefulWidget {
   final bool intakeMode;
   final String? location;
   final String? weather;
+  final bool enableMic;
 
   const NaturalChatScreen({super.key})
       : intakeMode = false,
         location = null,
-        weather = null;
+        weather = null,
+        enableMic = true;
 
   const NaturalChatScreen.intake({
     super.key,
     required this.location,
     required this.weather,
-  }) : intakeMode = true;
+  })  : intakeMode = true,
+        enableMic = true;
+
+  const NaturalChatScreen.readOnly({super.key})
+      : intakeMode = false,
+        location = null,
+        weather = null,
+        enableMic = false;
 
   @override
   State<NaturalChatScreen> createState() => _NaturalChatScreenState();
@@ -64,7 +73,10 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
 
   // 📝 대화 기록
   static List<Map<String, String>> _cachedHistory = [];
+  static List<Map<String, String>> _cachedIntakeHistory = [];
   List<Map<String, String>> _chatHistory = [];
+  List<Map<String, dynamic>> _sampleUsers = [];
+  int _selectedUserIndex = 0;
   final ScrollController _scrollController = ScrollController();
 
   final AIService _aiService = AIService();
@@ -72,12 +84,27 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
   @override
   void initState() {
     super.initState();
-    _chatHistory = List<Map<String, String>>.from(_cachedHistory);
+    _chatHistory = widget.intakeMode
+        ? List<Map<String, String>>.from(_cachedIntakeHistory)
+        : List<Map<String, String>>.from(_cachedHistory);
+    if (!widget.enableMic) {
+      _sampleUsers = _buildSampleUsers();
+      _applySelectedUserChat();
+    }
     _initSystem();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
 
   Future<void> _initSystem() async {
     print("--- 시스템 초기화 시작 ---");
+
+    if (!widget.enableMic) {
+      if (_chatHistory.isEmpty) {
+        _aiText = "대화 내용 수집 중입니다.";
+        _addChatMessage("ai", _aiText);
+      }
+      return;
+    }
     
     // 1. 권한 요청
     await [Permission.microphone, Permission.speech].request();
@@ -98,6 +125,7 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
     // 4. TTS 설정
     await _flutterTts.setLanguage("ko-KR");
     await _flutterTts.setSpeechRate(0.5);
+    await _flutterTts.awaitSpeakCompletion(true);
 
     // 5. 첫 인사
     if (_chatHistory.isEmpty) {
@@ -105,10 +133,15 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
         _aiText = "지금 상태를 천천히 같이 살펴볼게요. 편하게 말해줘요.";
       }
       _addChatMessage("ai", _aiText);
-      _flutterTts.speak(_aiText);
+      await _speakAndWait(_aiText);
       if (widget.intakeMode) {
-        _askNextIntakeQuestion();
+        await _askNextIntakeQuestion();
       }
+    } else if (!widget.intakeMode) {
+      // 사용자가 자의로 들어오면 다시 인사
+      final greet = "안녕하세요. 다시 만나서 반가워요. 오늘은 어떤 이야기를 해볼까요?";
+      _addChatMessage("ai", greet);
+      await _speakAndWait(greet);
     }
   }
 
@@ -269,6 +302,15 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
         }
       }
       
+      // 음성 신호 저장 (길이/빈도 지표) - intake/일반 모두 반영
+      if (durationMs != null) {
+        await StorageService.addVoiceSignal(
+          durationMs: durationMs,
+          transcriptLength: finalText.length,
+          hasSpeech: finalText.isNotEmpty,
+        );
+      }
+
       if (widget.intakeMode) {
         await _handleIntakeFlow(finalText);
         return;
@@ -279,15 +321,6 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
         audioFile: audioFile,
         chatHistory: _chatHistory,
       );
-
-      // 음성 신호 저장 (길이/빈도 지표)
-      if (durationMs != null) {
-        await StorageService.addVoiceSignal(
-          durationMs: durationMs,
-          transcriptLength: finalText.length,
-          hasSpeech: finalText.isNotEmpty,
-        );
-      }
 
       if (!mounted) return;
 
@@ -311,7 +344,11 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
     if (!mounted) return;
     setState(() {
       _chatHistory.add({"role": role, "text": text});
-      _cachedHistory = List<Map<String, String>>.from(_chatHistory);
+      if (widget.intakeMode) {
+        _cachedIntakeHistory = List<Map<String, String>>.from(_chatHistory);
+      } else {
+        _cachedHistory = List<Map<String, String>>.from(_chatHistory);
+      }
     });
     _scrollToBottom();
   }
@@ -342,13 +379,23 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
 
   @override
   void dispose() {
-    _saveChatSummary();
+    if (!widget.intakeMode) {
+      _saveChatSummary();
+    }
     _animTimer?.cancel();
     _scrollController.dispose();
-    _recorder.closeRecorder();
-    _speech.cancel();
-    _flutterTts.stop();
+    if (widget.enableMic) {
+      _recorder.closeRecorder();
+      _speech.cancel();
+      _flutterTts.stop();
+    }
     super.dispose();
+  }
+
+  Future<void> _speakAndWait(String text) async {
+    if (text.trim().isEmpty) return;
+    await _flutterTts.stop();
+    await _flutterTts.speak(text);
   }
 
   void _saveChatSummary() {
@@ -373,7 +420,7 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
     // 공감 한마디
     final empathy = _intakeEmpathy[_intakeStep.clamp(0, _intakeEmpathy.length - 1)];
     _addChatMessage("ai", empathy);
-    _flutterTts.speak(empathy);
+    await _speakAndWait(empathy);
 
     if (_intakeStep == 0) {
       _intakeAnswers['condition'] = userText.trim();
@@ -386,9 +433,21 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
     _intakeStep++;
 
     if (_intakeStep < _intakeQuestions.length) {
-      _askNextIntakeQuestion();
+      await _askNextIntakeQuestion();
       setState(() => _isThinking = false);
       return;
+    }
+
+    // ✅ intake 대화도 AI 리포트에 반영 (요약/키워드 저장)
+    if (_chatHistory.isNotEmpty) {
+      _aiService.summarizeChat(_chatHistory).then((summary) {
+        if (summary == null) return;
+        final String text = (summary['summary'] ?? '').toString();
+        final List<String> keywords = (summary['keywords'] is List)
+            ? (summary['keywords'] as List).map((e) => e.toString()).toList()
+            : <String>[];
+        StorageService.saveChatSummary(text, keywords);
+      });
     }
 
     if (!mounted) return;
@@ -421,11 +480,12 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
     });
   }
 
-  void _askNextIntakeQuestion() {
+  Future<void> _askNextIntakeQuestion() async {
     if (_intakeStep >= _intakeQuestions.length) return;
     final q = _intakeQuestions[_intakeStep];
+    final parts = _splitQuestionText(q);
     _addChatMessage("ai", q);
-    _flutterTts.speak(q);
+    await _speakAndWait(parts.$1);
   }
 
   @override
@@ -438,21 +498,10 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
         elevation: 0, 
         backgroundColor: Colors.transparent,
         iconTheme: const IconThemeData(color: Colors.black87),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.folder_open),
-            tooltip: "로컬 데이터 확인",
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const LocalDataScreen()),
-              );
-            },
-          )
-        ],
       ),
       body: Column(
         children: [
+          if (!widget.enableMic) _buildUserSelector(),
           Expanded(
             child: ListView.builder(
               controller: _scrollController,
@@ -461,6 +510,9 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
               itemBuilder: (context, index) {
                 final chat = _chatHistory[index];
                 final isUser = chat['role'] == 'user';
+                final messageText = chat['text'] ?? '';
+                final isAi = chat['role'] == 'ai';
+                final parts = isAi ? _splitQuestionText(messageText) : null;
                 return Align(
                   alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
                   child: Container(
@@ -477,10 +529,37 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
                       ),
                       boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 5, offset: const Offset(0, 2))],
                     ),
-                    child: Text(
-                      chat['text']!,
-                      style: TextStyle(color: isUser ? Colors.white : Colors.black87, fontSize: 16, height: 1.4),
-                    ),
+                    child: isAi && (parts?.$2.isNotEmpty ?? false)
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                parts!.$1,
+                                style: TextStyle(color: isUser ? Colors.white : Colors.black87, fontSize: 16, height: 1.4),
+                              ),
+                              const SizedBox(height: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withOpacity(0.04),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  parts.$2,
+                                  style: const TextStyle(
+                                    color: Colors.black54,
+                                    fontSize: 12,
+                                    height: 1.3,
+                                    fontStyle: FontStyle.italic,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          )
+                        : Text(
+                            messageText,
+                            style: TextStyle(color: isUser ? Colors.white : Colors.black87, fontSize: 16, height: 1.4),
+                          ),
                   ),
                 );
               },
@@ -496,6 +575,14 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
             ),
             child: Column(
               children: [
+                if (!widget.enableMic)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 10),
+                    child: Text(
+                      "이 화면은 대화 기록 확인용입니다.",
+                      style: TextStyle(fontSize: 14, color: Colors.black54),
+                    ),
+                  ),
                 if (_isListening)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 20),
@@ -511,27 +598,144 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
                     child: Text("답변을 생각하고 있어요... 🤔", style: TextStyle(fontSize: 16, color: Colors.grey)),
                   ),
                 
-                GestureDetector(
-                  onTap: _toggleListening,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 300),
-                    width: _buttonSize, height: _buttonSize,
-                    decoration: BoxDecoration(
-                      color: _isListening ? const Color(0xFFFF6B6B) : const Color(0xFF6BB8B0),
-                      shape: BoxShape.circle,
-                      boxShadow: [BoxShadow(color: (_isListening ? Colors.red : Colors.teal).withOpacity(0.4), blurRadius: 15, spreadRadius: 5)]
-                    ),
-                    child: Icon(
-                      _isThinking ? Icons.more_horiz : (_isListening ? Icons.stop : Icons.mic),
-                      color: Colors.white, size: 40,
+                if (widget.enableMic)
+                  GestureDetector(
+                    onTap: _toggleListening,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      width: _buttonSize, height: _buttonSize,
+                      decoration: BoxDecoration(
+                        color: _isListening ? const Color(0xFFFF6B6B) : const Color(0xFF6BB8B0),
+                        shape: BoxShape.circle,
+                        boxShadow: [BoxShadow(color: (_isListening ? Colors.red : Colors.teal).withOpacity(0.4), blurRadius: 15, spreadRadius: 5)]
+                      ),
+                      child: Icon(
+                        _isThinking ? Icons.more_horiz : (_isListening ? Icons.stop : Icons.mic),
+                        color: Colors.white, size: 40,
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
           ),
         ],
       ),
     );
+  }
+
+  Widget _buildUserSelector() {
+    if (_sampleUsers.isEmpty) return const SizedBox.shrink();
+    return SizedBox(
+      height: 96,
+      child: ListView.separated(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        scrollDirection: Axis.horizontal,
+        itemCount: _sampleUsers.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (context, index) {
+          final u = _sampleUsers[index];
+          final isSelected = index == _selectedUserIndex;
+          return GestureDetector(
+            onTap: () {
+              setState(() => _selectedUserIndex = index);
+              _applySelectedUserChat();
+            },
+            child: Container(
+              width: 140,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: isSelected ? Colors.white : Colors.white.withOpacity(0.85),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: isSelected ? const Color(0xFF6BB8B0) : Colors.black12, width: isSelected ? 2 : 1),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    "${u['nickname']}",
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    "Grade ${u['grade']}",
+                    style: const TextStyle(fontSize: 12),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    "${u['recent']}",
+                    style: const TextStyle(fontSize: 10, color: Colors.black54),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _applySelectedUserChat() {
+    if (_sampleUsers.isEmpty) return;
+    final chat = List<Map<String, String>>.from(_sampleUsers[_selectedUserIndex]['chat'] as List);
+    setState(() {
+      _chatHistory = chat;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  List<Map<String, dynamic>> _buildSampleUsers() {
+    return [
+      {
+        'nickname': '유나',
+        'grade': 'C',
+        'recent': '피곤하지만 괜찮다고 말함',
+        'chat': [
+          {'role': 'ai', 'text': '오늘 컨디션은 어떤가요? 예) 좀 지쳤어 / 괜찮은 편이야'},
+          {'role': 'user', 'text': '좀 피곤했어요.'},
+          {'role': 'ai', 'text': '말해줘서 고마워요. 지금 느낌을 소중하게 들었어요.'},
+          {'role': 'ai', 'text': '지금 어디에 있나요? 예) 방 / 거실 / 침대 위'},
+          {'role': 'user', 'text': '거실이에요.'},
+        ],
+      },
+      {
+        'nickname': '민준',
+        'grade': 'B',
+        'recent': '외출 늘리고 싶음',
+        'chat': [
+          {'role': 'ai', 'text': '오늘 컨디션은 어떤가요? 예) 좀 지쳤어 / 괜찮은 편이야'},
+          {'role': 'user', 'text': '괜찮은 편이야.'},
+          {'role': 'ai', 'text': '괜찮아요, 편하게 말해줘서 좋아요.'},
+          {'role': 'ai', 'text': '지금 무엇을 하고 있나요? 예) 누워있어 / 앉아서 쉬는 중'},
+          {'role': 'user', 'text': '앉아서 쉬고 있어.'},
+        ],
+      },
+      {
+        'nickname': '서연',
+        'grade': 'D',
+        'recent': '불안과 회피 경향',
+        'chat': [
+          {'role': 'ai', 'text': '오늘 컨디션은 어떤가요? 예) 좀 지쳤어 / 괜찮은 편이야'},
+          {'role': 'user', 'text': '그냥 지쳐.'},
+          {'role': 'ai', 'text': '지금 상태를 알려줘서 정말 도움이 됐어요.'},
+          {'role': 'ai', 'text': '지금 어디에 있나요? 예) 방 / 거실 / 침대 위'},
+          {'role': 'user', 'text': '방이야.'},
+        ],
+      },
+    ];
+  }
+
+  (String, String) _splitQuestionText(String text) {
+    final idx = text.indexOf("예)");
+    if (idx == -1) return (text, "");
+    final main = text.substring(0, idx).trim();
+    final example = text.substring(idx).trim();
+    return (main, example);
   }
 }

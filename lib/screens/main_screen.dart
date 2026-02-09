@@ -9,6 +9,7 @@ import '../services/storage_service.dart';
 import 'mission_page.dart';
 import 'history_page.dart';
 import 'natural_chat_screen.dart';
+import 'developer_menu_page.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -24,6 +25,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   final AIService _aiService = AIService();
   String _aiWeatherString = "Sunny";
   bool _autoChatPending = true;
+  bool _isBootstrapping = true;
   bool _isRestDay = false;
   String _todayMode = "NORMAL";
   String _todayPreference = "";
@@ -48,6 +50,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     )..repeat(reverse: true);
 
     _todaysMission = _getBackupMission();
+    _isBootstrapping = true;
     _loadAllData(generateMission: false); 
   }
 
@@ -151,6 +154,9 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           _isBonusActive = false;
           _isRestDay = _todayMode == "REST";
           _isLoading = false;
+          if (!allowAutoChat && generateMission) {
+            _isBootstrapping = false;
+          }
         });
       }
       if (allowAutoChat && _autoChatPending) {
@@ -161,13 +167,14 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       }
     } catch (e) {
       print("🔥 데이터 로딩 에러: $e");
-      if (mounted) {
-        setState(() {
-          _todaysMission = _getBackupMission(); // 에러 시 백업 미션
-          _isLoading = false;
-        });
-      }
+    if (mounted) {
+      setState(() {
+        _todaysMission = _getBackupMission(); // 에러 시 백업 미션
+        _isLoading = false;
+        _isBootstrapping = false;
+      });
     }
+  }
   }
 
   Future<void> _openIntakeChat() async {
@@ -455,9 +462,10 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) return _buildLoadingScreen();
+    if (_isLoading || _isBootstrapping) return _buildLoadingScreen();
 
     final textColor = getTextColor(currentWeather);
+    final bottomInset = MediaQuery.of(context).padding.bottom;
     
     String stateTitle = "Grade $_grade : 성장 중 🌱";
     if (_grade == 'A') stateTitle = "Grade A : 도약 중 ✨";
@@ -488,48 +496,43 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           _buildWeatherDecorations(),
           
           SafeArea(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                return SingleChildScrollView(
-                  padding: const EdgeInsets.only(bottom: 40),
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(minHeight: constraints.maxHeight),
-                    child: Column(
-                      children: [
-                        const SizedBox(height: 20),
-                        // 상단 정보바
-                        _buildTopBar(context, textColor, stateTitle),
+            child: Column(
+              children: [
+                const SizedBox(height: 8),
+                // 상단 정보바
+                _buildTopBar(context, textColor, stateTitle),
 
-                        const SizedBox(height: 30),
+                const SizedBox(height: 10),
 
-                        // 중앙 AI Orb & 미션 카드
-                        Column(
-                          children: [
-                            _buildAIOrb(),
-                            const SizedBox(height: 15),
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 500),
-                      child: _isRestDay
-                          ? _buildRestCard()
-                          : _isMissionCompleted
-                              ? _buildCompletedCard()
-                              : QuestCard(key: ValueKey(_todaysMission.content), mission: _todaysMission),
-                    ),
-                  ],
+                // 중앙 AI Orb & 미션 카드
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _buildAIOrb(),
+                      const SizedBox(height: 10),
+                      Flexible(
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 350),
+                          child: _isRestDay
+                              ? _buildRestCard()
+                              : _isMissionCompleted
+                                  ? _buildCompletedCard()
+                                  : QuestCard(key: ValueKey(_todaysMission.content), mission: _todaysMission),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
 
-                        const SizedBox(height: 30),
-
-                        // 하단 버튼 (완료 시 휴식 메시지)
-                _isRestDay ? _buildRestMessage() : (_isMissionCompleted ? _buildRestMessage() : _buildActionButtons(context)),
-
-                        // 버튼에 가려지지 않게 여백
-                        const SizedBox(height: 80),
-                      ],
-                    ),
-                  ),
-                );
-              },
+                // 하단 버튼 (완료 시 휴식 메시지)
+                Padding(
+                  padding: EdgeInsets.only(bottom: 96 + bottomInset),
+                  child: _isRestDay
+                      ? _buildRestMessage()
+                      : (_isMissionCompleted ? _buildRestMessage() : _buildActionButtons(context)),
+                ),
+              ],
             ),
           ),
         ],
@@ -571,6 +574,15 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                     icon: Icon(Icons.calendar_month_outlined, color: textColor),
                     onPressed: () {
                       Navigator.push(context, MaterialPageRoute(builder: (context) => HistoryPage(weatherType: currentWeather)));
+                    },
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.developer_mode, color: textColor),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => DeveloperMenuPage(weatherType: currentWeather)),
+                      );
                     },
                   ),
                 ],
@@ -704,7 +716,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       label: Text(_isBonusActive ? "보너스 미션 시작!" : "미션 수행하기", style: const TextStyle(fontSize: 18, color: Colors.white)),
       style: ElevatedButton.styleFrom(
         backgroundColor: const Color(0xFF6BB8B0),
-        minimumSize: const Size(280, 60),
+        minimumSize: const Size(260, 56),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
         elevation: 5,
       ),

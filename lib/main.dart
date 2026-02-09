@@ -6,6 +6,9 @@ import 'screens/user_info_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/main_screen.dart';
 import 'screens/natural_chat_screen.dart'; 
+import 'screens/developer_menu_page.dart';
+import 'screens/admin_dashboard_page.dart';
+import 'utils/theme_utils.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -114,6 +117,8 @@ class _HeartAppState extends State<HeartApp> {
       // 📌 라우트 설정
       routes: {
         '/chat': (context) => const NaturalChatScreen(),
+        '/dev': (context) => const DeveloperMenuPage(weatherType: WeatherType.sunny),
+        '/admin-dashboard': (context) => const AdminDashboardPage(weatherType: WeatherType.sunny),
       },
     );
   }

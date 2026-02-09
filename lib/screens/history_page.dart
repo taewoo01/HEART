@@ -6,7 +6,8 @@ import '../services/storage_service.dart';
 
 class HistoryPage extends StatefulWidget {
   final WeatherType weatherType;
-  const HistoryPage({super.key, required this.weatherType});
+  final bool multiUser;
+  const HistoryPage({super.key, required this.weatherType, this.multiUser = false});
 
   @override
   State<HistoryPage> createState() => _HistoryPageState();
@@ -15,8 +16,8 @@ class HistoryPage extends StatefulWidget {
 class _HistoryPageState extends State<HistoryPage> {
   bool _isLoading = true;
   List<MemoryModel> _memories = [];
-  Map<String, dynamic>? _profile;
-  List<Map<String, dynamic>> _voiceSignals = [];
+  List<Map<String, dynamic>> _users = [];
+  int _selectedUserIndex = 0;
 
   @override
   void initState() {
@@ -27,16 +28,18 @@ class _HistoryPageState extends State<HistoryPage> {
   Future<void> _loadMemories() async {
     setState(() => _isLoading = true);
     final entries = await StorageService.getMemoryEntries();
-    final profile = await StorageService.getUserProfile();
-    final voiceSignals = await StorageService.getVoiceSignals();
     final memories = entries.map(_mapToMemory).toList();
-    if (memories.isEmpty) {
-      memories.addAll(_buildTempMemories());
+    if (widget.multiUser) {
+      _users = _buildSampleUsers(memories);
+      _selectedUserIndex = _selectedUserIndex.clamp(0, _users.isEmpty ? 0 : _users.length - 1);
+      _memories = _selectedUserMemories();
+    } else {
+      if (memories.isEmpty) {
+        memories.addAll(_buildTempMemories());
+      }
+      _memories = memories;
     }
     setState(() {
-      _memories = memories;
-      _profile = profile;
-      _voiceSignals = voiceSignals;
       _isLoading = false;
     });
   }
@@ -67,8 +70,8 @@ class _HistoryPageState extends State<HistoryPage> {
                       : ListView(
                           padding: const EdgeInsets.all(20),
                           children: [
-                            _buildAnalysisReport(textColor),
-                            const SizedBox(height: 16),
+                            if (widget.multiUser) _buildUserSelector(textColor),
+                            if (widget.multiUser) const SizedBox(height: 12),
                             if (_memories.isEmpty)
                               const Center(
                                 child: Padding(
@@ -159,146 +162,54 @@ class _HistoryPageState extends State<HistoryPage> {
     }
   }
 
-  Widget _buildAnalysisReport(Color textColor) {
-    final profile = _profile ?? {};
-    final summary = (profile['chat_summary'] ?? '').toString();
-    final keywords = (profile['chat_keywords'] as List?)?.map((e) => e.toString()).toList() ?? <String>[];
-    final reason = (profile['analysis_reason'] ?? '').toString();
-    final perSoc = profile['per_soc'] ?? 0;
-    final perIso = profile['per_iso'] ?? 0;
-    final perEmo = profile['per_emo'] ?? 0;
-
-    final metrics = _buildVoiceMetrics();
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.9),
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.08),
-            blurRadius: 12,
-            offset: const Offset(0, 6),
-          )
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            "AI 분석 리포트 (최근 7일)",
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: textColor,
-            ),
-          ),
-          const SizedBox(height: 10),
-          _buildChipRow("HQ-25", [
-            "대인기피 ${perSoc}%",
-            "고립 ${perIso}%",
-            "정서 ${perEmo}%",
-          ]),
-          const SizedBox(height: 8),
-          _buildChipRow("음성 신호", [
-            "말한 횟수 ${metrics['count']}",
-            "평균 길이 ${metrics['avgMs']}ms",
-            "평균 글자수 ${metrics['avgLen']}",
-            "야간 비율 ${metrics['nightRatio']}%",
-          ]),
-          const SizedBox(height: 8),
-          if (summary.isNotEmpty)
-            _buildLabeledText("대화 요약", summary)
-          else
-            _buildLabeledText("대화 요약", "아직 요약이 없습니다."),
-          const SizedBox(height: 6),
-          _buildLabeledText(
-            "감정 키워드",
-            keywords.isNotEmpty ? keywords.join(", ") : "키워드가 아직 없습니다.",
-          ),
-          const SizedBox(height: 6),
-          _buildLabeledText(
-            "등급 근거",
-            reason.isNotEmpty ? reason : "근거 데이터가 아직 없습니다.",
-          ),
-        ],
-      ),
-    );
-  }
-
-  Map<String, dynamic> _buildVoiceMetrics() {
-    final now = DateTime.now();
-    final weekAgo = now.subtract(const Duration(days: 7));
-    final recent = _voiceSignals.where((e) {
-      final ts = (e['ts'] ?? 0) as int;
-      return DateTime.fromMillisecondsSinceEpoch(ts).isAfter(weekAgo);
-    }).toList();
-
-    if (recent.isEmpty) {
-      return {
-        'count': 0,
-        'avgMs': 0,
-        'avgLen': 0,
-        'nightRatio': 0,
-      };
-    }
-
-    int totalMs = 0;
-    int totalLen = 0;
-    int nightCount = 0;
-    for (final e in recent) {
-      totalMs += (e['duration_ms'] ?? 0) as int;
-      totalLen += (e['transcript_len'] ?? 0) as int;
-      final ts = (e['ts'] ?? 0) as int;
-      final dt = DateTime.fromMillisecondsSinceEpoch(ts);
-      if (dt.hour >= 22 || dt.hour <= 5) nightCount++;
-    }
-    final count = recent.length;
-    return {
-      'count': count,
-      'avgMs': (totalMs / count).round(),
-      'avgLen': (totalLen / count).round(),
-      'nightRatio': ((nightCount / count) * 100).round(),
-    };
-  }
-
-  Widget _buildChipRow(String label, List<String> items) {
-    return Wrap(
-      spacing: 6,
-      runSpacing: 6,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        Text(
-          "$label:",
-          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+  Widget _buildUserSelector(Color textColor) {
+    if (_users.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.9),
+          borderRadius: BorderRadius.circular(12),
         ),
-        ...items.map((t) => Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: const Text("표시할 사용자가 없습니다.", style: TextStyle(color: Colors.black54)),
+      );
+    }
+    return SizedBox(
+      height: 90,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: _users.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (context, index) {
+          final u = _users[index];
+          final isSelected = index == _selectedUserIndex;
+          return GestureDetector(
+            onTap: () {
+              setState(() {
+                _selectedUserIndex = index;
+                _memories = _selectedUserMemories();
+              });
+            },
+            child: Container(
+              width: 140,
+              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: const Color(0xFFE9EEF2),
-                borderRadius: BorderRadius.circular(12),
+                color: isSelected ? Colors.white : Colors.white.withOpacity(0.85),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: isSelected ? const Color(0xFF6BB8B0) : Colors.black12, width: isSelected ? 2 : 1),
               ),
-              child: Text(
-                t,
-                style: const TextStyle(fontSize: 12, color: Colors.black87),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("${u['nickname']}", style: const TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  Text("Grade ${u['grade']}", style: const TextStyle(fontSize: 12)),
+                  const Spacer(),
+                  Text("${u['recent']}", style: const TextStyle(fontSize: 11, color: Colors.black54), maxLines: 1, overflow: TextOverflow.ellipsis),
+                ],
               ),
-            )),
-      ],
-    );
-  }
-
-  Widget _buildLabeledText(String label, String text) {
-    return RichText(
-      text: TextSpan(
-        style: const TextStyle(fontSize: 12, color: Colors.black87, height: 1.4),
-        children: [
-          TextSpan(
-            text: "$label: ",
-            style: const TextStyle(fontWeight: FontWeight.bold),
-          ),
-          TextSpan(text: text),
-        ],
+            ),
+          );
+        },
       ),
     );
   }
@@ -321,5 +232,39 @@ class _HistoryPageState extends State<HistoryPage> {
         note: s["note"] as String,
       );
     }).toList();
+  }
+
+  List<Map<String, dynamic>> _buildSampleUsers(List<MemoryModel> localMemories) {
+    return [
+      {
+        'nickname': '로컬 사용자',
+        'grade': 'C',
+        'recent': localMemories.isNotEmpty ? localMemories.first.note : '기록 없음',
+        'memories': localMemories.isNotEmpty ? localMemories : _buildTempMemories(),
+      },
+      {
+        'nickname': '유나',
+        'grade': 'C',
+        'recent': '피곤하지만 괜찮았던 하루',
+        'memories': _buildTempMemories(),
+      },
+      {
+        'nickname': '민준',
+        'grade': 'B',
+        'recent': '외출을 조금 늘리고 싶음',
+        'memories': _buildTempMemories(),
+      },
+      {
+        'nickname': '서연',
+        'grade': 'D',
+        'recent': '불안하지만 견딤',
+        'memories': _buildTempMemories(),
+      },
+    ];
+  }
+
+  List<MemoryModel> _selectedUserMemories() {
+    if (_users.isEmpty) return [];
+    return List<MemoryModel>.from(_users[_selectedUserIndex]['memories'] as List);
   }
 }
