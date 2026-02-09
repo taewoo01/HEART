@@ -156,11 +156,6 @@ HEART/
 ├── .env
 └── pubspec.yaml
 
-
-```bash
-📂 Project Structure
-
-```bash
 HEART/
 ├── lib/
 │   ├── main.dart
