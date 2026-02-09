@@ -13,7 +13,7 @@ class AIService {
   // 모델은 필요에 따라 바꿀 수 있습니다.
   static const String _chatModel = "gpt-4o-mini";
   static const String _visionModel = "gpt-4o-mini";
-  static const String _transcribeModel = "gpt-4o-mini-transcribe";
+  static const String _transcribeModel = "whisper-1";
 
   AIService() {
     if (_apiKey.isEmpty) {
@@ -746,6 +746,26 @@ Time: $timeNow
     return (jsonMap["text"] ?? "").toString().trim();
   }
 
+  Future<Map<String, dynamic>> _transcribeAudioWithTimestamps(File audioFile) async {
+    final uri = Uri.parse("$_baseUrl/audio/transcriptions");
+    final request = http.MultipartRequest("POST", uri)
+      ..headers["Authorization"] = "Bearer $_apiKey"
+      ..fields["model"] = "whisper-1"
+      ..fields["language"] = "ko"
+      ..fields["response_format"] = "verbose_json"
+      ..fields["timestamp_granularities[]"] = "word"
+      ..files.add(await http.MultipartFile.fromPath("file", audioFile.path));
+
+    final streamed = await request.send();
+    final response = await http.Response.fromStream(streamed);
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception("Transcription failed: ${response.statusCode} ${response.body}");
+    }
+
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
   Future<Map<String, dynamic>> _postJson(String path, Map<String, dynamic> body) async {
     final uri = Uri.parse("$_baseUrl$path");
     final response = await http.post(
@@ -832,6 +852,11 @@ Time: $timeNow
   // 외부에서 전사만 필요할 때 사용
   Future<String> transcribeAudio(File audioFile) async {
     return _transcribeAudio(audioFile);
+  }
+
+  // 외부에서 타임스탬프 포함 전사 필요할 때 사용
+  Future<Map<String, dynamic>> transcribeAudioWithTimestamps(File audioFile) async {
+    return _transcribeAudioWithTimestamps(audioFile);
   }
 
   int _xpByGrade(String grade) {

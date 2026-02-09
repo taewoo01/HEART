@@ -17,6 +17,8 @@ class StorageService {
   static const String _keyChatSummary = "chatSummary";
   static const String _keyChatKeywords = "chatKeywords";
   static const String _keyVoiceSignals = "voiceSignals";
+  static const String _keyAudioAnalyses = "audioAnalyses";
+  static const String _keyDeviceId = "deviceId";
 
   // 1. 모든 정보 한 번에 저장하기 (초기 설정용)
   static Future<void> saveUserProfile({
@@ -143,6 +145,11 @@ class StorageService {
     required int durationMs,
     required int transcriptLength,
     required bool hasSpeech,
+    double? wpm,
+    double? pauseRatio,
+    int? avgPauseMs,
+    int? utteranceCount,
+    double? avgUtteranceWords,
     DateTime? timestamp,
   }) async {
     final prefs = await SharedPreferences.getInstance();
@@ -153,6 +160,11 @@ class StorageService {
       'duration_ms': durationMs,
       'transcript_len': transcriptLength,
       'has_speech': hasSpeech,
+      if (wpm != null) 'wpm': wpm,
+      if (pauseRatio != null) 'pause_ratio': pauseRatio,
+      if (avgPauseMs != null) 'avg_pause_ms': avgPauseMs,
+      if (utteranceCount != null) 'utterance_count': utteranceCount,
+      if (avgUtteranceWords != null) 'avg_utterance_words': avgUtteranceWords,
     });
     final updated = [entry, ...current];
     await prefs.setStringList(_keyVoiceSignals, updated.take(100).toList());
@@ -168,5 +180,39 @@ class StorageService {
         return <String, dynamic>{};
       }
     }).where((e) => e.isNotEmpty).toList();
+  }
+
+  // 음성 분석 결과 저장 (서버 응답)
+  static Future<void> addAudioAnalysis(Map<String, dynamic> analysis) async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String> current = prefs.getStringList(_keyAudioAnalyses) ?? [];
+    final entry = jsonEncode(analysis);
+    final updated = [entry, ...current];
+    await prefs.setStringList(_keyAudioAnalyses, updated.take(200).toList());
+  }
+
+  static Future<List<Map<String, dynamic>>> getAudioAnalyses() async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String> current = prefs.getStringList(_keyAudioAnalyses) ?? [];
+    return current.map((e) {
+      try {
+        return jsonDecode(e) as Map<String, dynamic>;
+      } catch (_) {
+        return <String, dynamic>{};
+      }
+    }).where((e) => e.isNotEmpty).toList();
+  }
+
+  // 기기 ID (로컬 유저 식별용)
+  static Future<String> getOrCreateDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final existing = prefs.getString(_keyDeviceId);
+    if (existing != null && existing.isNotEmpty) return existing;
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final rand = now ^ (now << 13);
+    final id = "device_$now$rand";
+    await prefs.setString(_keyDeviceId, id);
+    return id;
   }
 }

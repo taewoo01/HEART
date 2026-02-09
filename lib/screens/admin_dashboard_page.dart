@@ -19,6 +19,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   List<FileSystemEntity> _audioFiles = [];
   List<Map<String, dynamic>> _users = [];
   int _selectedUserIndex = 0;
+  List<Map<String, dynamic>> _audioAnalyses = [];
 
   @override
   void initState() {
@@ -30,6 +31,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     setState(() => _isLoading = true);
     final profile = await StorageService.getUserProfile();
     final voiceSignals = await StorageService.getVoiceSignals();
+    final audioAnalyses = await StorageService.getAudioAnalyses();
     final dir = await getApplicationDocumentsDirectory();
     final files = dir
         .listSync()
@@ -43,6 +45,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       _audioFiles = files;
       _users = users;
       _selectedUserIndex = _selectedUserIndex.clamp(0, users.isEmpty ? 0 : users.length - 1);
+      _audioAnalyses = audioAnalyses;
       _isLoading = false;
     });
   }
@@ -71,6 +74,10 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       _buildUserTable(textColor),
                       const SizedBox(height: 16),
                       _buildAnalysisReportCard(textColor),
+                      const SizedBox(height: 16),
+                      _buildEmotionEstimateCard(textColor),
+                      const SizedBox(height: 16),
+                      _buildServerAnalysisCard(textColor),
                       const SizedBox(height: 16),
                       _buildLocalDataCard(textColor),
                       const SizedBox(height: 16),
@@ -213,8 +220,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           _chipRow("최근 7일", [
             "말한 횟수 ${metrics['count']}",
             "평균 길이 ${metrics['avgMs']}ms",
-            "평균 글자수 ${metrics['avgLen']}",
-            "야간 비율 ${metrics['nightRatio']}%",
+            "평균 WPM ${metrics['avgWpm']}",
+            "멈춤비율 ${metrics['avgPauseRatio']}%",
           ]),
           const SizedBox(height: 8),
           if (_voiceSignals.isEmpty)
@@ -234,6 +241,75 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                 ),
               );
             }),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmotionEstimateCard(Color textColor) {
+    final user = _selectedUser();
+    final metrics = _buildVoiceMetrics();
+    final estimate = _buildEmotionEstimateText(metrics, user);
+    return _glassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionTitle("감정 추정 (경향)", textColor),
+          const SizedBox(height: 8),
+          Text(
+            estimate,
+            style: const TextStyle(fontSize: 12, height: 1.5, color: Colors.black87),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            "※ 음성 속도/멈춤 비율/대화 요약을 바탕으로 한 참고용 추정입니다.",
+            style: TextStyle(fontSize: 11, color: Colors.black54),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildServerAnalysisCard(Color textColor) {
+    final latest = _latestServerAnalysis();
+    if (latest == null) {
+      return _glassCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _sectionTitle("서버 음성 분석 (실시간)", textColor),
+            const SizedBox(height: 6),
+            const Text("아직 서버 분석 결과가 없습니다.", style: TextStyle(fontSize: 12)),
+          ],
+        ),
+      );
+    }
+
+    final metrics = latest['metrics'] as Map? ?? {};
+    final emotion = latest['emotion_estimate'] as Map? ?? {};
+    final label = emotion['label'] ?? '-';
+    final conf = emotion['confidence'] ?? '-';
+    final note = emotion['note'] ?? '';
+    final wpm = metrics['wpm'] ?? '-';
+    final pause = metrics['pause_ratio'] ?? '-';
+
+    return _glassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionTitle("서버 음성 분석 (실시간)", textColor),
+          const SizedBox(height: 8),
+          _chipRow("지표", [
+            "WPM $wpm",
+            "멈춤비율 $pause",
+          ]),
+          const SizedBox(height: 6),
+          Text("레이블: $label · 신뢰도: $conf", style: const TextStyle(fontSize: 12)),
+          if (note.toString().isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(note.toString(), style: const TextStyle(fontSize: 12, color: Colors.black54)),
+            ),
         ],
       ),
     );
@@ -272,6 +348,11 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         ],
       ),
     );
+  }
+
+  Map<String, dynamic>? _latestServerAnalysis() {
+    if (_audioAnalyses.isEmpty) return null;
+    return _audioAnalyses.first;
   }
 
   Widget _glassCard({required Widget child}) {
@@ -361,18 +442,32 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         'avgMs': 0,
         'avgLen': 0,
         'nightRatio': 0,
+        'avgWpm': 0,
+        'avgPauseRatio': 0,
       };
     }
 
     int totalMs = 0;
     int totalLen = 0;
     int nightCount = 0;
+    double totalWpm = 0;
+    double totalPauseRatio = 0;
+    int wpmCount = 0;
+    int pauseCount = 0;
     for (final e in recent) {
       totalMs += (e['duration_ms'] ?? 0) as int;
       totalLen += (e['transcript_len'] ?? 0) as int;
       final ts = (e['ts'] ?? 0) as int;
       final dt = DateTime.fromMillisecondsSinceEpoch(ts);
       if (dt.hour >= 22 || dt.hour <= 5) nightCount++;
+      if (e['wpm'] != null) {
+        totalWpm += (e['wpm'] as num).toDouble();
+        wpmCount++;
+      }
+      if (e['pause_ratio'] != null) {
+        totalPauseRatio += (e['pause_ratio'] as num).toDouble();
+        pauseCount++;
+      }
     }
     final count = recent.length;
     return {
@@ -380,7 +475,37 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       'avgMs': (totalMs / count).round(),
       'avgLen': (totalLen / count).round(),
       'nightRatio': ((nightCount / count) * 100).round(),
+      'avgWpm': wpmCount == 0 ? 0 : (totalWpm / wpmCount).round(),
+      'avgPauseRatio': pauseCount == 0 ? 0 : ((totalPauseRatio / pauseCount) * 100).round(),
     };
+  }
+
+  String _buildEmotionEstimateText(Map<String, dynamic> metrics, Map<String, dynamic> user) {
+    final int avgWpm = metrics['avgWpm'] ?? 0;
+    final int avgPauseRatio = metrics['avgPauseRatio'] ?? 0; // %
+    final String summary = (user['chat_summary'] ?? '').toString();
+    final List<dynamic> keywords = user['chat_keywords'] is List ? user['chat_keywords'] as List : <dynamic>[];
+    final String keywordText = keywords.isNotEmpty ? keywords.take(3).join(", ") : "키워드 없음";
+
+    String speedNote = "발화 속도: 보통 범위로 분류.";
+    if (avgWpm >= 150) speedNote = "발화 속도: 빠른 편으로 분류.";
+    if (avgWpm > 0 && avgWpm < 95) speedNote = "발화 속도: 느린 편으로 분류.";
+
+    String pauseNote = "멈춤 비율: 보통 범위로 분류.";
+    if (avgPauseRatio >= 25) pauseNote = "멈춤 비율: 높은 편으로 분류.";
+    if (avgPauseRatio > 0 && avgPauseRatio < 10) pauseNote = "멈춤 비율: 낮은 편으로 분류.";
+
+    String overall = "종합: 유의미한 편차 신호는 제한적.";
+    if ((avgWpm >= 150 && avgPauseRatio >= 20) || (avgWpm < 95 && avgPauseRatio >= 25)) {
+      overall = "종합: 긴장/피로 신호 동시 관측 가능.";
+    } else if (avgWpm < 95 && avgPauseRatio < 10) {
+      overall = "종합: 저활성/차분 상태 가능.";
+    } else if (avgWpm >= 150 && avgPauseRatio < 10) {
+      overall = "종합: 고활성/집중 상태 가능.";
+    }
+
+    final summaryLine = summary.isNotEmpty ? "요약: $summary" : "요약: 없음";
+    return "$overall\n$speedNote $pauseNote\n$summaryLine\n키워드: $keywordText";
   }
 
   Widget _buildDashboardSummary(Color textColor) {
@@ -551,7 +676,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         'analysis_reason': '정서 지표가 높아 위로 중심 미션이 필요.',
         'recent_summary': '피곤하지만 괜찮다고 말함',
         'active': true,
-        'voice_metrics': {'count': 5, 'avgMs': 4200, 'avgLen': 34, 'nightRatio': 20},
+        'voice_metrics': {'count': 5, 'avgMs': 4200, 'avgLen': 34, 'nightRatio': 20, 'avgWpm': 118, 'avgPauseRatio': 14},
         'voice_samples': [
           {'name': 'voice_1700000001.m4a', 'modified': '2026-02-08 21:10', 'size_kb': 312},
           {'name': 'voice_1700000002.m4a', 'modified': '2026-02-07 22:41', 'size_kb': 198},
@@ -570,7 +695,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         'analysis_reason': '사회성 노출을 조금씩 늘리는 전략이 적합.',
         'recent_summary': '외출 늘리고 싶음',
         'active': true,
-        'voice_metrics': {'count': 2, 'avgMs': 2800, 'avgLen': 18, 'nightRatio': 0},
+        'voice_metrics': {'count': 2, 'avgMs': 2800, 'avgLen': 18, 'nightRatio': 0, 'avgWpm': 140, 'avgPauseRatio': 8},
         'voice_samples': [
           {'name': 'voice_1699999123.m4a', 'modified': '2026-02-06 19:05', 'size_kb': 145},
         ],
@@ -588,7 +713,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         'analysis_reason': 'High 지표가 많아 안정 우선 전략 필요.',
         'recent_summary': '불안과 회피 경향',
         'active': false,
-        'voice_metrics': {'count': 1, 'avgMs': 1500, 'avgLen': 8, 'nightRatio': 100},
+        'voice_metrics': {'count': 1, 'avgMs': 1500, 'avgLen': 8, 'nightRatio': 100, 'avgWpm': 90, 'avgPauseRatio': 30},
         'voice_samples': [
           {'name': 'voice_1699980001.m4a', 'modified': '2026-02-03 02:18', 'size_kb': 86},
         ],

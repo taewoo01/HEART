@@ -7,6 +7,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import '../services/ai_service.dart';
+import '../services/audio_analysis_service.dart';
 import 'local_data_screen.dart';
 import '../services/storage_service.dart';
 
@@ -80,6 +81,7 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
   final ScrollController _scrollController = ScrollController();
 
   final AIService _aiService = AIService();
+  final AudioAnalysisService _audioAnalysisService = AudioAnalysisService();
 
   @override
   void initState() {
@@ -279,9 +281,17 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
       print(">>> 3. AI에게 텍스트 전송: $userText <<<");
 
       String finalText = userText;
-      if (finalText.isEmpty && audioFile != null) {
+      List<dynamic>? wordTimestamps;
+      if (audioFile != null) {
         try {
-          finalText = await _aiService.transcribeAudio(audioFile);
+          final transcribed = await _aiService.transcribeAudioWithTimestamps(audioFile);
+          final transcribedText = (transcribed['text'] ?? '').toString();
+          if (transcribed['words'] is List) {
+            wordTimestamps = transcribed['words'] as List<dynamic>;
+          }
+          if (finalText.isEmpty) {
+            finalText = transcribedText;
+          }
           if (finalText.isNotEmpty) {
             // 방금 추가한 (음성 메시지) 버블을 실제 텍스트로 교체
             if (_chatHistory.isNotEmpty &&
@@ -304,11 +314,29 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
       
       // 음성 신호 저장 (길이/빈도 지표) - intake/일반 모두 반영
       if (durationMs != null) {
+        final metrics = _buildVoiceMetricsFromWords(wordTimestamps, durationMs);
         await StorageService.addVoiceSignal(
           durationMs: durationMs,
           transcriptLength: finalText.length,
           hasSpeech: finalText.isNotEmpty,
+          wpm: metrics?['wpm'] as double?,
+          pauseRatio: metrics?['pause_ratio'] as double?,
+          avgPauseMs: metrics?['avg_pause_ms'] as int?,
+          utteranceCount: metrics?['utterance_count'] as int?,
+          avgUtteranceWords: metrics?['avg_utterance_words'] as double?,
         );
+      }
+
+      // 서버 음성 분석 (실시간) - 비동기 저장
+      if (audioFile != null && await audioFile.exists()) {
+        final userId = await StorageService.getOrCreateDeviceId();
+        _audioAnalysisService
+            .analyzeAudio(audioFile: audioFile, userId: userId)
+            .then((result) {
+          if (result != null) {
+            StorageService.addAudioAnalysis(result);
+          }
+        });
       }
 
       if (widget.intakeMode) {
@@ -486,6 +514,53 @@ class _NaturalChatScreenState extends State<NaturalChatScreen> with SingleTicker
     final parts = _splitQuestionText(q);
     _addChatMessage("ai", q);
     await _speakAndWait(parts.$1);
+  }
+
+  Map<String, dynamic>? _buildVoiceMetricsFromWords(List<dynamic>? words, int durationMs) {
+    if (words == null || words.isEmpty || durationMs <= 0) return null;
+    final durationSec = durationMs / 1000.0;
+    final wordCount = words.length;
+
+    double totalPause = 0;
+    double totalSpeech = 0;
+    double? prevEnd;
+    int utteranceCount = 1;
+    int currentUtteranceWords = 0;
+    int totalUtteranceWords = 0;
+
+    for (final w in words) {
+      final start = (w is Map && w['start'] != null) ? (w['start'] as num).toDouble() : null;
+      final end = (w is Map && w['end'] != null) ? (w['end'] as num).toDouble() : null;
+      if (start == null || end == null) continue;
+      totalSpeech += (end - start).clamp(0.0, double.infinity);
+      currentUtteranceWords++;
+
+      if (prevEnd != null) {
+        final gap = (start - prevEnd).clamp(0.0, double.infinity);
+        if (gap > 0.8) {
+          // 0.8초 이상 멈춤이면 발화 구분
+          utteranceCount++;
+          totalUtteranceWords += currentUtteranceWords;
+          currentUtteranceWords = 0;
+        }
+        totalPause += gap;
+      }
+      prevEnd = end;
+    }
+    totalUtteranceWords += currentUtteranceWords;
+
+    final wpm = (wordCount / (durationSec / 60.0));
+    final pauseRatio = (totalPause / durationSec).clamp(0.0, 1.0);
+    final avgPauseMs = wordCount > 1 ? ((totalPause / (wordCount - 1)) * 1000).round() : 0;
+    final avgUtteranceWords = utteranceCount > 0 ? (totalUtteranceWords / utteranceCount) : wordCount.toDouble();
+
+    return {
+      'wpm': double.parse(wpm.toStringAsFixed(1)),
+      'pause_ratio': double.parse(pauseRatio.toStringAsFixed(2)),
+      'avg_pause_ms': avgPauseMs,
+      'utterance_count': utteranceCount,
+      'avg_utterance_words': double.parse(avgUtteranceWords.toStringAsFixed(1)),
+    };
   }
 
   @override
